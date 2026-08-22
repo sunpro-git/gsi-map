@@ -146,12 +146,14 @@ padding:0 12px;font-size:14px;font-family:inherit;color:var(--text);
 .dot{flex:0 0 auto;width:12px;height:12px;border-radius:50%;margin-left:6px;}
 .dot.origin{background:#fff;box-shadow:inset 0 0 0 3px var(--text-sub);}
 .dot.dest{background:#ea4335;box-shadow:inset 0 0 0 2px #fff, 0 0 0 1px #ea4335;}
-.dirfold{
-display:none;width:100%;align-items:center;gap:8px;
-padding:10px 12px;border:0;background:transparent;cursor:pointer;
+.dirfold{display:none;align-items:center;gap:4px;padding:6px 6px 6px 10px;}
+.df-open{
+display:flex;flex:1;min-width:0;align-items:center;gap:8px;
+padding:6px 4px;border:0;background:transparent;cursor:pointer;
 font-family:inherit;font-size:14px;color:var(--text);text-align:left;
 }
-.dirfold svg{width:20px;height:20px;fill:var(--text-sub);flex:none;}
+.df-open:hover{background:rgba(60,64,67,.06);border-radius:6px;}
+.dirfold svg{width:18px;height:18px;fill:var(--text-sub);flex:none;}
 .df-text{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .df-edit{color:var(--blue);font-size:13px;flex:none;}
 .dircard.folded .dirfold{display:flex;}
@@ -951,11 +953,16 @@ body.sv-open .panel,body.sv-open .paneltab{display:none;}
   <!-- 経路の入力（検索結果と同じ枠にまとめる） -->
   <div id="dirCard" class="card dircard hidden">
     <!-- 検索後は 1 行に畳んで、結果と「ナビ開始」を上に出す -->
-    <button id="dirFold" class="dirfold">
-      <svg viewBox="0 0 24 24"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
-      <span id="dirFoldText" class="df-text">出発地 → 目的地</span>
-      <span class="df-edit">変更</span>
-    </button>
+    <div class="dirfold">
+      <button id="dirFold" class="df-open" title="出発地・目的地を変更する">
+        <svg viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75z"/></svg>
+        <span id="dirFoldText" class="df-text">出発地 → 目的地</span>
+        <span class="df-edit">変更</span>
+      </button>
+      <button id="dirClear" class="iconbtn small" title="経路を消す" aria-label="経路を消す">
+        <svg viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+      </button>
+    </div>
     <div class="dirhead">
       <button id="dirBack" class="iconbtn" title="戻る" aria-label="戻る">
         <svg viewBox="0 0 24 24"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
@@ -4653,12 +4660,35 @@ function stopWatch(){
   updateGeoBtn();
 }
 
+/**
+ * 位置情報が許可されていないときの案内。
+ * ブラウザの決まりで、サイト側から勝手に許可することはできない。
+ * 端末ごとに設定する場所が違うので、使っている端末に合わせて出す。
+ */
+function geoDeniedHelp(){
+  const ua = navigator.userAgent;
+  const ios = /iPhone|iPad|iPod/.test(ua);
+  if (ios){
+    return '位置情報が許可されていません。'
+         + 'アドレスバー左の「ぁA」→「Web サイトの設定」→「位置情報」を「許可」にしてください。'
+         + 'それでも出る場合は、iPhone の「設定」→「プライバシーとセキュリティ」→'
+         + '「位置情報サービス」でブラウザを「このAppの使用中のみ許可」にしてください';
+  }
+  return '位置情報が許可されていません。'
+       + 'アドレスバー左の鍵（またはスライダー）のアイコンを押し、'
+       + '「位置情報」を「許可」に変えてから、ページを再読み込みしてください';
+}
+
 function onWatchError(err){
-  const msg = { 1:'位置情報の利用が許可されていません',
-                2:'現在地を取得できませんでした（電波・GPS の状態をご確認ください）',
+  if (err.code === 1){
+    toast(geoDeniedHelp(), 12000);
+    setFollow(false);
+    if (nav.active) endNavigation();
+    return;
+  }
+  const msg = { 2:'現在地を取得できませんでした（電波・GPS の状態をご確認ください）',
                 3:'測位に時間がかかっています' };
   toast(msg[err.code] || '現在地を取得できませんでした', 5000);
-  if (err.code === 1){ setFollow(false); if (nav.active) endNavigation(); }
 }
 
 function onFix(pos){
@@ -7259,6 +7289,7 @@ function pickEndFromMap(lngLat){
 }
 
 function closeDirections(){
+  clearRoute();                    // 地図に線やピンが残らないようにする
   document.body.classList.remove('dir-open', 'dir-searched');
   $('#dirCard').classList.add('hidden');
   $('#searchCard').classList.remove('hidden');
@@ -7272,6 +7303,9 @@ function setRouteEnd(which, place){
 }
 function clearRoute(){
   state.route.from = state.route.to = state.route.line = state.route.info = null;
+  setEndPick(null);                // 「地図から選ぶ」も解除する
+  foldDirCard(false);              // 畳んでいたら開き直す
+  document.body.classList.remove('dir-searched');
   $('#fromInput').value = ''; $('#toInput').value = '';
   map.getSource('route').setData(EMPTY_FC);
   clearSearchMarkers();
@@ -7612,8 +7646,8 @@ function useCurrentAsOrigin(){
   navigator.geolocation.getCurrentPosition(
     p => set(p.coords.longitude, p.coords.latitude),
     err => {
-      const msg = { 1:'位置情報の利用が許可されていません',
-                    2:'現在地を取得できませんでした（電波・GPS の状態をご確認ください）',
+      if (err.code === 1){ toast(geoDeniedHelp(), 12000); return; }
+      const msg = { 2:'現在地を取得できませんでした（電波・GPS の状態をご確認ください）',
                     3:'現在地の取得がタイムアウトしました' };
       toast(msg[err.code] || '現在地を取得できませんでした', 5000);
     },
@@ -7657,7 +7691,8 @@ function locate(){
     goToPlace({ lng, lat, title:'現在地', accuracy });
   }, err => {
     btn.classList.remove('busy');
-    const msg = { 1:'位置情報の利用が許可されていません', 2:'現在地を取得できませんでした', 3:'位置情報の取得がタイムアウトしました' };
+    if (err.code === 1){ toast(geoDeniedHelp(), 12000); return; }
+    const msg = { 2:'現在地を取得できませんでした', 3:'位置情報の取得がタイムアウトしました' };
     toast(msg[err.code] || '現在地を取得できませんでした');
   }, { enableHighAccuracy:true, timeout:10000, maximumAge:30000 });
 }
@@ -7721,6 +7756,7 @@ function bindUI(){
   $('#fromHere').onclick = useCurrentAsOrigin;
   $('#fromPick').onclick = () => setEndPick('from');
   $('#dirFold').onclick = () => foldDirCard(false);
+  $('#dirClear').onclick = () => { clearRoute(); toast('経路を消しました'); };
   /* 有料道路・高速道路を使うかどうか。設定は次回も引き継ぐ */
   const opt = routeOptions();
   $('#optNoToll').checked = !!opt.noToll;

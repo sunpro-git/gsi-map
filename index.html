@@ -5671,7 +5671,7 @@ function setOsmTrails(on){
   const changed = ost.on !== on;
   ost.on = on;
   const show = on && osmVectorReady();
-  for (const id of ['osm-paths-line', 'osm-routes-line'])
+  for (const id of ['osm-paths-casing', 'osm-paths-line', 'osm-routes-line'])
     if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', show ? 'visible' : 'none');
 
   const note = $('#osmNote');
@@ -6245,6 +6245,11 @@ const GSI_TRAIL_FTCODE = 2721;
 const ROUTE_COLOR = '#c6ff00';   // 本線
 const ROUTE_EDGE  = '#1b5e20';   // 縁取り（明るい地図でも沈まないように濃い緑）
 
+// 登山道の色。紙の地図と同じ赤系にする。
+// 白で縁取りして、地図の道路や等高線に埋もれないようにする
+const TRAIL_COLOR = '#e00b0b';
+const TRAIL_EDGE  = '#ffffff';
+
 const DEFAULT_VIEW = { center:[139.767125, 35.681236], zoom:14, bearing:0, pitch:0 }; // 東京駅
 
 /* ---------- 小物ユーティリティ ---------- */
@@ -6359,22 +6364,31 @@ function buildStyle(){
       paint:{ 'fill-color':'#4285f4', 'fill-opacity':0.15 } },
     { id:'accuracy-line', type:'line', source:'accuracy',
       paint:{ 'line-color':'#4285f4', 'line-opacity':0.35, 'line-width':1 } },
-    // 国土地理院の徒歩道 ＝ 橙のはっきりした線
+    // OSM の登山ルート（まとまり）＝ 薄い赤の帯
+    { id:'osm-routes-line', type:'line', source:'osm-routes',
+      layout:{ 'line-cap':'round', 'line-join':'round', visibility:'none' },
+      paint:{ 'line-color':TRAIL_COLOR, 'line-opacity':0.22,
+              'line-width':['interpolate',['linear'],['zoom'],12,5,17,13] } },
+    // 国土地理院の徒歩道 ＝ 赤の実線（白で縁取り）
+    { id:'gsi-trail-casing', type:'line', source:'gsi-vector', 'source-layer':'road',
+      minzoom:11, filter:['==', ['get','ftCode'], GSI_TRAIL_FTCODE],
+      layout:{ 'line-cap':'round', 'line-join':'round', visibility:'none' },
+      paint:{ 'line-color':TRAIL_EDGE, 'line-opacity':0.85,
+              'line-width':['interpolate',['linear'],['zoom'],11,3.4,17,7] } },
     { id:'gsi-trail-line', type:'line', source:'gsi-vector', 'source-layer':'road',
       minzoom:11, filter:['==', ['get','ftCode'], GSI_TRAIL_FTCODE],
       layout:{ 'line-cap':'round', 'line-join':'round', visibility:'none' },
-      paint:{ 'line-color':'#e8710a', 'line-opacity':0.95,
-              'line-width':['interpolate',['linear'],['zoom'],11,1.4,17,4] } },
-    // OSM の登山ルート（まとまり）＝ 太い紫の帯。地理院地図の線と見分けられる色にする
-    { id:'osm-routes-line', type:'line', source:'osm-routes',
-      layout:{ 'line-cap':'round', 'line-join':'round', visibility:'none' },
-      paint:{ 'line-color':'#a142f4', 'line-opacity':0.45,
-              'line-width':['interpolate',['linear'],['zoom'],12,4,17,10] } },
-    // OSM の個々の登山道 ＝ 緑の破線
+      paint:{ 'line-color':TRAIL_COLOR, 'line-opacity':0.95,
+              'line-width':['interpolate',['linear'],['zoom'],11,1.4,17,3.6] } },
+    // OSM の個々の登山道 ＝ 赤の破線（出典の違いが分かるように線の種類を変える）
+    { id:'osm-paths-casing', type:'line', source:'osm-paths',
+      layout:{ 'line-cap':'butt', 'line-join':'round', visibility:'none' },
+      paint:{ 'line-color':TRAIL_EDGE, 'line-opacity':0.8, 'line-dasharray':[2.4, 1.6],
+              'line-width':['interpolate',['linear'],['zoom'],12,3.4,17,6] } },
     { id:'osm-paths-line', type:'line', source:'osm-paths',
       layout:{ 'line-cap':'butt', 'line-join':'round', visibility:'none' },
-      paint:{ 'line-color':'#0b8043', 'line-opacity':0.9, 'line-dasharray':[2.4, 1.6],
-              'line-width':['interpolate',['linear'],['zoom'],12,1.6,17,3.4] } },
+      paint:{ 'line-color':TRAIL_COLOR, 'line-opacity':0.95, 'line-dasharray':[2.4, 1.6],
+              'line-width':['interpolate',['linear'],['zoom'],12,1.6,17,3.2] } },
     { id:'route-casing', type:'line', source:'route',
       layout:{ 'line-cap':'round', 'line-join':'round' },
       paint:{ 'line-color':'#1558b0', 'line-width':['interpolate',['linear'],['zoom'],10,6,16,11] } },
@@ -6511,7 +6525,8 @@ function applyLayers(){
   for (const o of OVERLAYS){
     const on = state.overlays.has(o.id);
     if (o.vector){                                  // 国土地理院の徒歩道
-      map.setLayoutProperty('gsi-trail-line', 'visibility', on ? 'visible' : 'none');
+      for (const id of ['gsi-trail-casing', 'gsi-trail-line'])
+        map.setLayoutProperty(id, 'visibility', on ? 'visible' : 'none');
       continue;
     }
     // OSM の登山道は、拡大すると「クリックできる線」に切り替える。

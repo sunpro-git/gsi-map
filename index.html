@@ -1808,6 +1808,23 @@ async function autoSyncFromClipboard(){
  * 利用者がボタンを押した流れの中でなら読み取れる。
  * そのため、戻る → ボタンを 1 回押す、だけで済むようにしている。
  */
+/**
+ * クリップボードの中身を、確認画面を出さずにのぞく。
+ * 読み取りが許可されている環境でだけ中を見る。
+ * iPhone のように読めない場合は null を返す（勝手に許可を求めない）。
+ */
+async function peekClipboardLocation(){
+  if (!navigator.clipboard || !navigator.clipboard.readText) return null;
+  try {
+    const st = await navigator.permissions.query({ name:'clipboard-read' });
+    if (st.state !== 'granted') return null;      // 許可されていなければ触らない
+  } catch { return null; }                        // この判定ができない環境も触らない
+  try {
+    const text = await navigator.clipboard.readText();
+    return text ? parseGoogleLocation(text) : null;
+  } catch { return null; }
+}
+
 function showClipBar(){
   const bar = $('#clipBar');
   if (!bar) return;
@@ -1905,7 +1922,7 @@ function applyPastedLocation(){
 function openStreetViewExternal(lngLat){
   gstate.awaitingPaste = true;      // 戻ってきたらクリップボードを見る
   toast('見つけた場所でアドレスバーの URL をコピーし、'
-      + 'このアプリに戻ってボタンを押すとピンが立ちます', 9000);
+      + 'このアプリに戻って検索欄に貼り付けると、その地点にピンが立ちます', 9000);
   openExternal(streetViewUrl(lngLat));
 }
 
@@ -2134,7 +2151,9 @@ function bindGoogleUI(){
     }
     if (!gstate.awaitingPaste) return;
     gstate.awaitingPaste = false;
-    showClipBar();                      // 1 タップで取り込めるボタンを出す
+    // 座標をコピーしていないのにボタンが出ると邪魔なので、
+    // 中身を確かめられて、それが座標のときだけ出す
+    if (await peekClipboardLocation()) showClipBar();
   };
   window.addEventListener('focus', onReturn);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) onReturn(); });
@@ -6802,6 +6821,12 @@ function renderSuggest(items){
 function hideSuggest(){ $('#suggest').classList.add('hidden'); sgSel = -1; }
 
 async function runSuggest(q){
+  // Google マップ・ストリートビューの URL を貼り付けたときも地点として扱う
+  const g = /https?:\/\//.test(q) ? parseGoogleLocation(q) : null;
+  if (g){
+    renderSuggest([{ title:`Google マップの地点 ${fmtLL(g.lng, g.lat)}`, lng:g.lng, lat:g.lat }]);
+    return;
+  }
   const ll = parseLatLng(q);
   if (ll){
     renderSuggest([{ title:`緯度経度 ${fmtLL(ll.lng, ll.lat)}`, lng:ll.lng, lat:ll.lat }]);
@@ -6828,6 +6853,12 @@ async function submitSearch(){
   const q = $('#searchInput').value.trim();
   if (!q) return;
   hideSuggest();
+  const g = /https?:\/\//.test(q) ? parseGoogleLocation(q) : null;
+  if (g){
+    goToPlace({ lng:g.lng, lat:g.lat, title:'Google マップで指定した地点' });
+    $('#searchInput').value = '';
+    return;
+  }
   const ll = parseLatLng(q);
   if (ll){ goToPlace({ lng:ll.lng, lat:ll.lat, title:`緯度経度 ${fmtLL(ll.lng, ll.lat)}` }); return; }
 

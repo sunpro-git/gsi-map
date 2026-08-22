@@ -1284,26 +1284,6 @@ display:flex;align-items:center;justify-content:center;
   </div>
 </div>
 
-<!-- ============ 地点の保存ダイアログ ============ -->
-<div id="placeModal" class="modal hidden">
-  <div class="modal-card card">
-    <h3>この地点を保存</h3>
-    <div class="modal-field">
-      <label class="fl">名前</label>
-      <input id="placeName" type="text" placeholder="例: 登山口の駐車場" autocomplete="off">
-    </div>
-    <div class="modal-field">
-      <label class="fl">アイコン<span>地図上に常時表示されます</span></label>
-      <div id="placeIcons" class="icon-picker"></div>
-    </div>
-    <div class="modal-btns">
-      <span class="spacer"></span>
-      <button class="btn" id="placeCancel">キャンセル</button>
-      <button class="btn primary" id="placeSave">保存</button>
-    </div>
-  </div>
-</div>
-
 <!-- ============ Google マップの座標を貼り付け ============ -->
 <!-- ============ 保存したものの設定（名前・フォルダ・アイコン） ============ -->
 <div id="itemModal" class="modal hidden">
@@ -5843,13 +5823,15 @@ function folderHead(g){
  *   item  … 対象
  *   onSave(値), onDelete() … 呼び出し側で保存の仕方が違うので渡してもらう
  */
-function openItemEditor(kind, item, handlers){
+function openItemEditor(kind, item, handlers, labels){
   istate.target = { kind, item, handlers };
   const isPlace = kind === 'place';
 
   const folders = knownFolders();
   const cur = item.folder || '';
-  $('#itemModalTitle').textContent = isPlace ? '地点の設定' : 'ルートの設定';
+  $('#itemModalTitle').textContent = (labels && labels.title)
+    || (isPlace ? '地点の設定' : 'ルートの設定');
+  $('#itemSave').textContent = (labels && labels.save) || '保存';
   $('#itemIconWrap').classList.toggle('hidden', !isPlace);
 
   $('#itemName').value = item.title || item.name || '';
@@ -7702,6 +7684,10 @@ function renderPlacePins(){
 /* ---------- 保存した場所 ---------- */
 
 /** 名前とアイコンを選んでから保存する（未ログインなら先に確認する） */
+/**
+ * 地点を保存する。
+ * 名前・フォルダ・アイコンは、保存後に変えるときと同じ画面で指定する。
+ */
 async function savePlace(place){
   const key = p => `${(+p.lat).toFixed(5)},${(+p.lng).toFixed(5)}`;
   if (state.saved.some(p => key(p) === key(place))){ toast('すでに保存されています'); return; }
@@ -7710,42 +7696,44 @@ async function savePlace(place){
                            + 'Google アカウントでのログインが必要です。');
   if (how === 'cancel') return;
 
-  const m = $('#placeModal');
-  m.classList.remove('hidden');
-  $('#placeName').value = place.title && place.title !== '選択した地点' && place.title !== '指定した地点'
-    ? place.title : '';
-  $('#placeIcons').innerHTML = PLACE_ICONS.map((ic, i) => `
-    <button class="icopt ${i === 0 ? 'on' : ''}" data-icon="${ic.id}" title="${esc(ic.name)}">
-      <span class="sp-mark" style="background:${ic.color}">
-        <svg viewBox="0 0 24 24"><path d="${ICON_PATH[ic.id]}"/></svg></span>
-      <span class="ico-name">${esc(ic.name)}</span>
-    </button>`).join('');
-  setTimeout(() => $('#placeName').focus(), 50);
+  const auto = ['選択した地点', '指定した地点', '現在地'];
+  openItemEditor('place', {
+    title: place.title && !auto.includes(place.title) ? place.title : '',
+    folder: lastUsedFolder(),          // 前に使ったフォルダを最初から選んでおく
+    icon: PLACE_ICONS[0].id,
+  }, {
+    onSave: async patch => {
+      rememberLastFolder(patch.folder);
+      state.saved.unshift({
+        title: patch.name || '保存した地点',
+        icon: patch.icon,
+        folder: patch.folder,
+        lng: place.lng, lat: place.lat,
+        savedAt: new Date().toISOString(),
+      });
+      persistSaved();
+      renderPlacePins();
+      pushPlacesQuietly();                   // ログイン中はドライブにも反映
+      toast(isSignedIn()
+        ? '保存しました（Google ドライブと共有・他の端末でも見られます）'
+        : 'この端末にだけ保存しました（他の端末では見られません）', 5000);
+    },
+  }, { title:'地点を保存', save:'保存' });
+}
 
-  let icon = PLACE_ICONS[0].id;
-  $('#placeIcons').onclick = e => {
-    const b = e.target.closest('.icopt'); if (!b) return;
-    icon = b.dataset.icon;
-    $$('#placeIcons .icopt').forEach(x => x.classList.toggle('on', x === b));
-  };
-  $('#placeCancel').onclick = () => m.classList.add('hidden');
-  $('#placeName').onkeydown = e => { if (e.key === 'Enter'){ e.preventDefault(); $('#placeSave').click(); } };
-  $('#placeSave').onclick = () => {
-    m.classList.add('hidden');
-    state.saved.unshift({
-      title: $('#placeName').value.trim() || '保存した地点',
-      icon,
-      folder: '',
-      lng: place.lng, lat: place.lat,
-      savedAt: new Date().toISOString(),
-    });
-    persistSaved();
-    renderPlacePins();
-    pushPlacesQuietly();                     // ログイン中はドライブにも反映
-    toast(isSignedIn()
-      ? '保存しました（Google ドライブと共有・他の端末でも見られます）'
-      : 'この端末にだけ保存しました（他の端末では見られません）', 5000);
-  };
+/* 続けて登録するときに毎回選び直さなくてよいよう、前回のフォルダを覚えておく */
+const LAST_FOLDER_STORE = 'gsimap.lastFolder';
+function lastUsedFolder(){
+  try {
+    const f = localStorage.getItem(LAST_FOLDER_STORE) || '';
+    return knownFolders().includes(f) ? f : '';
+  } catch { return ''; }
+}
+function rememberLastFolder(f){
+  try {
+    if (f) localStorage.setItem(LAST_FOLDER_STORE, f);
+    else localStorage.removeItem(LAST_FOLDER_STORE);
+  } catch {}
 }
 
 function showSaved(opts = {}){
@@ -8706,7 +8694,6 @@ function bindKeyboard(){
       hideCtxMenu(); hideSuggest();
       if (!$('#modal').classList.contains('hidden')) closeKeyDialog();
       else if (!$('#pasteModal').classList.contains('hidden')) closePasteDialog();
-      else if (!$('#placeModal').classList.contains('hidden')) $('#placeModal').classList.add('hidden');
       else if (!$('#loginModal').classList.contains('hidden')) $('#loginCancel').click();
       else if (!$('#routeModal').classList.contains('hidden')) closeRouteSaveDialog();
       else if (gstate.pickMode) toggleStreetViewPick(false);

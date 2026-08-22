@@ -146,6 +146,19 @@ padding:0 12px;font-size:14px;font-family:inherit;color:var(--text);
 .dot{flex:0 0 auto;width:12px;height:12px;border-radius:50%;margin-left:6px;}
 .dot.origin{background:#fff;box-shadow:inset 0 0 0 3px var(--text-sub);}
 .dot.dest{background:#ea4335;box-shadow:inset 0 0 0 2px #fff, 0 0 0 1px #ea4335;}
+.dirfold{
+display:none;width:100%;align-items:center;gap:8px;
+padding:10px 12px;border:0;background:transparent;cursor:pointer;
+font-family:inherit;font-size:14px;color:var(--text);text-align:left;
+}
+.dirfold svg{width:20px;height:20px;fill:var(--text-sub);flex:none;}
+.df-text{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.df-edit{color:var(--blue);font-size:13px;flex:none;}
+.dircard.folded .dirfold{display:flex;}
+.dircard.folded .dirhead,
+.dircard.folded .dirrow,
+.dircard.folded .diropts,
+.dircard.folded .dirfoot{display:none;}
 .diropts{display:flex;flex-wrap:wrap;gap:4px 14px;padding:2px 12px 0 34px;}
 .diropts.hidden{display:none;}
 .chk{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-sub);cursor:pointer;}
@@ -438,7 +451,13 @@ min-width:460px;max-width:calc(100vw - 24px);padding:10px 14px;
 .trackbar.nav .tk-cell.nav-only{display:block;}
 .trackbar.nav #tkRemain{color:var(--blue);}
 .trackbar.offroute #tkOff{color:#d93025;}
-.tk-sub{font-size:11px;color:var(--text-sub);margin-top:6px;text-align:center;}
+.tk-sub{
+font-size:12px;margin-top:6px;text-align:center;
+color:#a56300;background:#fef7e0;border-radius:6px;padding:5px 8px;
+}
+.tk-sub.hidden{display:none;}
+.tk-sub.off{color:#c5221f;background:#fce8e6;}
+.trackbar.road .dir-cell{display:none;}
 .dir-cell{position:relative;}
 .navarrow{
 width:34px;height:34px;margin:0 auto;
@@ -453,14 +472,20 @@ transition:transform .25s ease-out, background .2s;
 .trackbar.offroute .navarrow svg{fill:#d93025;}
 .tk-btns{display:flex;align-items:center;gap:6px;margin-top:8px;}
 .tk-maneuver{
-display:flex;align-items:baseline;gap:8px;
+display:flex;align-items:center;gap:10px;
 padding:0 0 8px;margin-bottom:8px;border-bottom:1px solid var(--line);
 }
 .tk-maneuver.hidden{display:none;}
-.mv-dist{font-size:20px;font-weight:500;color:var(--blue);white-space:nowrap;
+.mv-ic{
+flex:none;width:38px;height:38px;border-radius:50%;background:#e8f0fe;
+display:flex;align-items:center;justify-content:center;
+}
+.mv-ic svg{width:26px;height:26px;fill:var(--blue);}
+.mv-dist{font-size:22px;font-weight:500;color:var(--text);white-space:nowrap;
 font-variant-numeric:tabular-nums;}
-.mv-text{font-size:13px;line-height:1.4;min-width:0;
-display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}
+.mv-text{font-size:13px;color:var(--text-sub);line-height:1.3;min-width:0;
+white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.tk-cell .tk svg{width:11px;height:11px;fill:currentColor;vertical-align:-1px;margin-right:2px;}
 .tk-toggle{
 position:absolute;top:4px;right:6px;z-index:2;
 width:26px;height:26px;padding:0;border:0;border-radius:50%;
@@ -785,7 +810,7 @@ padding-bottom:env(safe-area-inset-bottom);
 .panel .p-title{font-size:18px;margin-bottom:2px;}
 .panel .p-sub{font-size:12px;margin-bottom:10px;}
 .panel .p-actions{gap:3px;padding:0 0 8px;}
-.panel .p-act{width:50px;font-size:10px;gap:4px;}
+.panel .p-act{width:62px;font-size:10px;gap:4px;}
 .panel #rowSvExt,.panel #rowMapExt{display:none;}
 .panel .p-row.half{
 display:inline-flex;width:calc(50% - 3px);vertical-align:top;gap:8px;
@@ -925,6 +950,12 @@ body.sv-open .panel,body.sv-open .paneltab{display:none;}
   </button>
   <!-- 経路の入力（検索結果と同じ枠にまとめる） -->
   <div id="dirCard" class="card dircard hidden">
+    <!-- 検索後は 1 行に畳んで、結果と「ナビ開始」を上に出す -->
+    <button id="dirFold" class="dirfold">
+      <svg viewBox="0 0 24 24"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+      <span id="dirFoldText" class="df-text">出発地 → 目的地</span>
+      <span class="df-edit">変更</span>
+    </button>
     <div class="dirhead">
       <button id="dirBack" class="iconbtn" title="戻る" aria-label="戻る">
         <svg viewBox="0 0 24 24"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
@@ -1077,6 +1108,7 @@ body.sv-open .panel,body.sv-open .paneltab{display:none;}
   </button>
   <!-- 道路を走るときの案内（○ m 先 右折）。経路検索から始めたときだけ出る -->
   <div id="tkManeuver" class="tk-maneuver hidden">
+    <span class="mv-ic" id="tkMvIcon"></span>
     <span class="mv-dist" id="tkMvDist">—</span>
     <span class="mv-text" id="tkMvText"></span>
   </div>
@@ -1087,13 +1119,26 @@ body.sv-open .panel,body.sv-open .paneltab{display:none;}
       </div>
       <div class="tk" id="tkDirLabel">測位中…</div>
     </div>
-    <div class="tk-cell keep"><div class="tv" id="tkRemain">—</div><div class="tk">残り距離</div></div>
-    <div class="tk-cell"><div class="tv" id="tkEta">—</div><div class="tk">残り時間</div></div>
-    <div class="tk-cell keep"><div class="tv" id="tkArrive">—</div><div class="tk">到着予定</div></div>
+    <!-- 文字を減らし、意味は小さなアイコンで示す（距離・所要時間・到着時刻） -->
+    <div class="tk-cell keep">
+      <div class="tv" id="tkRemain">—</div>
+      <div class="tk"><svg viewBox="0 0 24 24"><path d="M20 6h-2.18A3 3 0 1 0 14 9.82V14H9.82A3 3 0 1 0 6 17.82V20h2v-2.18A3 3 0 0 0 9.82 16H16V9.82A3 3 0 0 0 17.82 8H20z"/></svg>距離</div>
+    </div>
+    <div class="tk-cell">
+      <div class="tv" id="tkEta">—</div>
+      <div class="tk"><svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm1 11h-5v-2h3V6h2z"/></svg>所要</div>
+    </div>
+    <div class="tk-cell keep">
+      <div class="tv" id="tkArrive">—</div>
+      <div class="tk"><svg viewBox="0 0 24 24"><path d="M6 3v18h2v-7h9l-2-3 2-3H8V3z"/></svg>到着</div>
+    </div>
+    <div class="tk-cell">
+      <div class="tv" id="tkEle">—</div>
+      <div class="tk"><svg viewBox="0 0 24 24"><path d="M2 20h20L14 6l-4 7-2-3z"/></svg>標高</div>
+    </div>
   </div>
-  <div class="tk-sub">
-    ルートまで <b id="tkOff">—</b>　標高 <b id="tkEle">—</b>　<span id="tkAcc">測位中…</span>
-  </div>
+  <!-- ふだんは出さず、ルートを外れたときや測位が不安定なときだけ知らせる -->
+  <div class="tk-sub hidden" id="tkSub"></div>
   <div class="tk-btns">
     <button id="tkHeadUp" class="chipbtn" title="向いている方向を上にする">
       <svg viewBox="0 0 24 24"><path d="M12 2 4.5 20.29l.71.71L12 18l6.79 3 .71-.71z"/></svg>
@@ -4561,6 +4606,7 @@ const NAV_WINDOW_M = 300;      // ルート上の現在位置を、前回位置�
 const NAV_BACK_M = 60;         // 後戻りとして認める範囲（測位のふらつき用）
 const ARRIVE_M = 30;           // ゴールまでこの距離になったら到着とみなす
 const ARRIVE_MIN_RUN_M = 100;  // ただし、これだけ進んでいない間は到着にしない
+const POOR_ACCURACY_M = 40;    // これより誤差が大きいときだけ「定まっていません」と出す
 const WALK_SPEED = 1.3;        // 平均速度が分からないときの目安（m/s・徒歩）
 
 /* ---------- 測位 ---------- */
@@ -4994,6 +5040,15 @@ function estimateRemainSec(remainM){
   return v > 0 ? remainM / v : null;
 }
 
+/** バー下の注意書き。空文字なら消す */
+function showTrackNote(text, isOff){
+  const el = $('#tkSub');
+  if (!el) return;
+  el.textContent = text || '';
+  el.classList.toggle('hidden', !text);
+  el.classList.toggle('off', !!isOff);
+}
+
 function fmtClock(date){
   return `${date.getHours()}:${String(date.getMinutes()).padStart(2, '0')}`;
 }
@@ -5004,7 +5059,6 @@ function updateNavigation(){
   if (!d) return;
 
   $('#tkRemain').textContent = fmtDist(d.remain);
-  $('#tkOff').textContent = `${Math.round(d.off)} m`;
   const sec = estimateRemainSec(d.remain);
   $('#tkEta').textContent = sec != null ? fmtDur(sec) : '—';
   $('#tkArrive').textContent = sec != null ? fmtClock(new Date(Date.now() + sec * 1000)) : '—';
@@ -5014,6 +5068,7 @@ function updateNavigation(){
 
   const off = d.off > OFF_ROUTE_M;
   $('#trackBar').classList.toggle('offroute', off);
+  showTrackNote(off ? `ルートから ${Math.round(d.off)} m 外れています` : '', off);
   if (off && Date.now() - nav.lastWarn > 30000){
     nav.lastWarn = Date.now();
     toast(`ルートから ${Math.round(d.off)} m 離れています`, 5000);
@@ -5082,14 +5137,48 @@ function nextManeuver(){
   return null;
 }
 
+/**
+ * Valhalla の案内の種類を、矢印の向き（度）に置き換える。
+ * 右に曲がるほど時計回りに回すので、絵を見ただけで方向が分かる。
+ * 数値の意味は Valhalla の maneuver type に対応している。
+ */
+const MV_ANGLE = {
+  1:0, 2:35, 3:-35,               // 出発
+  7:0, 8:0,                       // 道なり・直進
+  9:40, 10:90, 11:135,            // 斜め右・右折・鋭角右
+  12:170, 13:-170,                // U ターン
+  14:-135, 15:-90, 16:-40,        // 鋭角左・左折・斜め左
+  17:0, 18:40, 19:-40,            // ランプ
+  20:60, 21:-60,                  // 出口
+  22:0, 23:25, 24:-25,            // そのまま直進・右寄り・左寄り
+  25:0, 37:30, 38:-30,            // 合流
+};
+const MV_FLAG = new Set([4, 5, 6]);          // 目的地
+const MV_ROUNDABOUT = new Set([26, 27]);     // ロータリー
+
+const MV_ICON = {
+  arrow:'<svg viewBox="0 0 24 24"><path d="M11 21V7.83l-4.59 4.58L5 11l7-7 7 7-1.41 1.41L13 7.83V21z"/></svg>',
+  flag:'<svg viewBox="0 0 24 24"><path d="M6 3v18h2v-7h9l-2-3 2-3H8V3z"/></svg>',
+  roundabout:'<svg viewBox="0 0 24 24"><path d="M14 6a4 4 0 1 0-5 3.87V22h2V9.87A4 4 0 0 0 14 6zm-4 0a2 2 0 1 1 4 0 2 2 0 0 1-4 0z"/><path d="M15 3h6v6h-2V6.41l-3.3 3.3-1.4-1.42L17.59 5H15z"/></svg>',
+};
+
+function maneuverIcon(type){
+  if (MV_FLAG.has(type)) return MV_ICON.flag;
+  if (MV_ROUNDABOUT.has(type)) return MV_ICON.roundabout;
+  const deg = MV_ANGLE[type] != null ? MV_ANGLE[type] : 0;
+  return `<span style="display:flex;transform:rotate(${deg}deg)">${MV_ICON.arrow}</span>`;
+}
+
 function updateManeuver(){
   const box = $('#tkManeuver');
   if (!box) return;
   const m = nextManeuver();
   if (!m){ box.classList.add('hidden'); return; }
   box.classList.remove('hidden');
-  $('#tkMvDist').textContent = `${fmtDist(m.ahead)}先`;
-  $('#tkMvText').textContent = m.text || '';
+  $('#tkMvIcon').innerHTML = maneuverIcon(m.type);
+  $('#tkMvDist').textContent = fmtDist(m.ahead);
+  // 文字は道路名だけにとどめる（向きは矢印で分かるため）
+  $('#tkMvText').textContent = m.road || '';
 }
 
 /* ---------- 画面を消さない ---------- */
@@ -5275,10 +5364,16 @@ function updateTrackBar(){
   const ele = tstate.lastFix && tstate.lastFix.ele;
   $('#tkEle').textContent = ele != null ? `${Math.round(ele)} m` : '—';
 
+  // 測位が大きくずれているときだけ知らせる（ふだんは出さない）
   const acc = tstate.lastFix && tstate.lastFix.acc;
-  $('#tkAcc').textContent = acc != null
-    ? `測位精度 ±${Math.round(acc)} m`
-    : '測位中…（屋外のほうが精度が上がります）';
+  if (!nav.offRoute){
+    if (acc == null) showTrackNote('現在地を取得しています…');
+    else if (acc > POOR_ACCURACY_M) showTrackNote(`現在地が定まっていません（誤差 ±${Math.round(acc)} m）`);
+    else showTrackNote('');
+  }
+
+  // 道路の案内が出ているときは、方位の矢印を省いて表示を減らす
+  bar.classList.toggle('road', !!(nav.steps && nav.steps.length));
 
   const hu = $('#tkHeadUp');
   if (hu) hu.classList.toggle('on', cstate.headingUp);
@@ -7124,8 +7219,23 @@ function openDirections(){
   p.scrollTop = 0;
   $('#panelTab').classList.remove('hidden');
   setPanelCollapsed(false);
+  foldDirCard(false);
   // 出発地はふつう現在地なので、空なら自動で入れておく
   if (!state.route.from && !$('#fromInput').value.trim()) useCurrentAsOrigin();
+}
+
+/**
+ * 経路の入力欄を 1 行に畳む／戻す。
+ * 画面の狭いスマホでは、検索したら自動で畳んで結果と「ナビ開始」を上に出す。
+ */
+function foldDirCard(on){
+  const card = $('#dirCard');
+  card.classList.toggle('folded', !!on);
+  if (on){
+    const f = $('#fromInput').value.trim() || '出発地';
+    const t = $('#toInput').value.trim() || '目的地';
+    $('#dirFoldText').textContent = `${f} → ${t}`;
+  }
 }
 
 /**
@@ -7269,7 +7379,7 @@ async function valhallaRoute(from, to, opt){
     hasFerry: !!sum.has_ferry,
     steps: (leg.maneuvers || []).map(m => ({
       text: m.instruction,
-      short: m.verbal_transition_alert_instruction || m.verbal_pre_transition_instruction || m.instruction,
+      road: (m.street_names && m.street_names[0]) || '',   // 曲がった先の道路名
       distance: m.length * 1000,          // その案内の区間の長さ
       at: at[Math.min(m.begin_shape_index || 0, at.length - 1)],   // 出発点からの距離
       type: m.type,
@@ -7445,6 +7555,7 @@ function showRoutePanel(from, to, route, warn){
       </div>
     </div>`);
 
+  if (window.innerWidth <= 640) foldDirCard(true);
   $('#rtNav').onclick     = () => useSearchedRoute(startNavigation);
   $('#rtProfile').onclick = () => useSearchedRoute(buildProfile);
   $('#rtGpx').onclick     = () => useSearchedRoute(exportGpx);
@@ -7609,6 +7720,7 @@ function bindUI(){
   };
   $('#fromHere').onclick = useCurrentAsOrigin;
   $('#fromPick').onclick = () => setEndPick('from');
+  $('#dirFold').onclick = () => foldDirCard(false);
   /* 有料道路・高速道路を使うかどうか。設定は次回も引き継ぐ */
   const opt = routeOptions();
   $('#optNoToll').checked = !!opt.noToll;

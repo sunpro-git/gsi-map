@@ -909,6 +909,40 @@ body.sv-open .rightctrl{right:8px;bottom:calc(52dvh + 12px);}
 body.sv-open .layerarea{bottom:calc(52dvh + 12px);}
 body.sv-open .panel,body.sv-open .paneltab{display:none;}
 }
+.fold-head{
+display:flex;align-items:center;gap:6px;
+margin:14px 0 2px;font-size:12px;font-weight:500;color:var(--text-sub);
+}
+.fold-head svg{width:16px;height:16px;fill:var(--text-sub);}
+.fold-n{
+margin-left:auto;font-weight:400;font-size:11px;
+background:#f1f3f4;border-radius:9px;padding:1px 7px;
+}
+.p-list .li-edit{flex:0 0 auto;}
+.fsel{
+width:100%;height:38px;padding:0 8px;font-size:14px;font-family:inherit;
+border:1px solid var(--line);border-radius:6px;background:#fff;color:var(--text);
+}
+.fsel:focus{border-color:var(--blue);outline:none;}
+.ico-picker{max-height:240px;overflow-y:auto;margin-top:4px;}
+.ico-group{font-size:11px;color:var(--text-sub);margin:8px 0 4px;}
+.ico-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:6px;}
+.icopt{
+display:flex;flex-direction:column;align-items:center;gap:3px;
+border:1px solid transparent;border-radius:8px;padding:6px 2px;
+background:transparent;cursor:pointer;font-family:inherit;
+}
+.icopt:hover{background:#f1f3f4;}
+.icopt.on{border-color:var(--blue);background:#e8f0fe;}
+.icopt .sp-mark{
+width:30px;height:30px;border-radius:50%;
+display:flex;align-items:center;justify-content:center;
+}
+.icopt .sp-mark svg{width:18px;height:18px;fill:#fff;}
+.icopt .ico-name{font-size:10px;color:var(--text-sub);line-height:1.2;text-align:center;}
+.btn.danger{color:#d93025;}
+.btn.danger:hover{background:rgba(217,48,37,.08);}
+.fold-head .fold-del{margin-left:4px;}
 </style>
 </head>
 <body>
@@ -1267,6 +1301,33 @@ body.sv-open .panel,body.sv-open .paneltab{display:none;}
 </div>
 
 <!-- ============ Google マップの座標を貼り付け ============ -->
+<!-- ============ 保存したものの設定（名前・フォルダ・アイコン） ============ -->
+<div id="itemModal" class="modal hidden">
+  <div class="modal-card card">
+    <h3 id="itemModalTitle">設定</h3>
+    <div class="modal-field">
+      <label class="fl">名前</label>
+      <input id="itemName" type="text" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="modal-field">
+      <label class="fl">フォルダ<span>分けて整理できます</span></label>
+      <select id="itemFolder" class="fsel"></select>
+      <input id="itemFolderNew" class="hidden" type="text" placeholder="新しいフォルダの名前"
+             autocomplete="off" spellcheck="false" style="margin-top:6px">
+    </div>
+    <div class="modal-field hidden" id="itemIconWrap">
+      <label class="fl">アイコン</label>
+      <div id="itemIcons" class="ico-picker"></div>
+    </div>
+    <div class="modal-btns">
+      <button class="btn danger hidden" id="itemDelete">削除</button>
+      <span class="spacer"></span>
+      <button class="btn" id="itemCancel">キャンセル</button>
+      <button class="btn primary" id="itemSave">保存</button>
+    </div>
+  </div>
+</div>
+
 <!-- ============ 現在地の利用を確認する ============ -->
 <div id="geoModal" class="modal hidden">
   <div class="modal-card card">
@@ -3707,9 +3768,12 @@ function openAddGoogleAccount(){
 
 /* ---------- トークン ---------- */
 
+// タブを閉じてもログイン状態が続くよう localStorage に置く。
+// ただし Google のアクセストークンは 1 時間ほどで切れるので、
+// 切れていたら silentSignIn() で取り直す。
 function loadToken(){
   try {
-    const raw = sessionStorage.getItem(TOKEN_STORE);
+    const raw = localStorage.getItem(TOKEN_STORE);
     if (!raw) return null;
     const t = JSON.parse(raw);
     return t && t.expires_at > Date.now() + 30000 ? t : null;
@@ -3718,8 +3782,9 @@ function loadToken(){
 function storeToken(t){
   dstate.token = t;
   try {
-    if (t) sessionStorage.setItem(TOKEN_STORE, JSON.stringify(t));
-    else sessionStorage.removeItem(TOKEN_STORE);
+    if (t) localStorage.setItem(TOKEN_STORE, JSON.stringify(t));
+    else localStorage.removeItem(TOKEN_STORE);
+    sessionStorage.removeItem(TOKEN_STORE);      // 以前の版の置き場を掃除する
   } catch {}
 }
 function isSignedIn(){
@@ -3832,6 +3897,51 @@ async function driveSignIn(){
     // ブラウザにログイン中の別のアカウントがそのまま使われてしまう
     // （＝指定したアカウントのパスワードを聞かれないまま弾かれる）。
     dstate.tokenClient.requestAccessToken({ prompt: 'select_account' });
+  });
+}
+
+
+/**
+ * 画面を出さずにログインし直す。
+ *
+ * 一度許可していて、ブラウザで Google にログインしたままなら、
+ * 確認画面なしで新しいトークンをもらえる。
+ * これで「閉じて開き直したらログアウトしていた」を防ぐ。
+ * もらえなかったときは、そのまま未ログインとして扱う（画面は出さない）。
+ */
+async function silentSignIn(){
+  if (isSignedIn()) return true;
+  if (!hasClientId()) return false;
+  let known = null;
+  try { known = JSON.parse(localStorage.getItem('gsimap.guser') || 'null'); } catch {}
+  if (!known || !known.email) return false;      // 一度もログインしていない
+
+  try { await loadGis(); } catch { return false; }
+
+  return new Promise(resolve => {
+    let done = false;
+    const finish = v => { if (!done){ done = true; resolve(v); } };
+    setTimeout(() => finish(false), 8000);       // 応答が無いときは諦める
+
+    const client = google.accounts.oauth2.initTokenClient({
+      client_id: getClientId(),
+      scope: DRIVE_SCOPE,
+      hint: known.email,
+      callback: async resp => {
+        if (!resp || !resp.access_token){ finish(false); return; }
+        storeToken({ access_token:resp.access_token,
+                     expires_at: Date.now() + (Number(resp.expires_in) || 3600) * 1000 });
+        dstate.user = known;
+        await fetchUserInfo();
+        updateAuthUi();
+        hideGate();
+        finish(true);
+        try { await syncPlaces(); await syncSettings(); } catch {}
+      },
+      error_callback: () => finish(false),        // 静かに諦める（画面は出さない）
+    });
+    try { client.requestAccessToken({ prompt:'' }); }   // 確認画面を出さない
+    catch { finish(false); }
   });
 }
 
@@ -3955,8 +4065,17 @@ async function driveList(){
           + ` and trashed=false and mimeType!='application/vnd.google-apps.folder'`;
   const r = await driveApi(`/files?q=${encodeURIComponent(q)}`
     + `&orderBy=${encodeURIComponent('modifiedTime desc')}`
-    + `&pageSize=100&fields=files(id,name,modifiedTime,size)`);
+    + `&pageSize=100&fields=files(id,name,modifiedTime,size,appProperties)`);
   return r.files || [];
+}
+
+
+/** ルートの名前とフォルダを変える（フォルダは appProperties に持たせる） */
+async function driveUpdateRoute(fileId, name, folder){
+  return driveApi('/files/' + fileId, {
+    method:'PATCH',
+    body: JSON.stringify({ name, appProperties:{ folder: folder || '' } }),
+  });
 }
 
 async function driveUpload(name, content, fileId, mime = 'application/gpx+xml', parentId = null){
@@ -4154,6 +4273,9 @@ function saveLocalRoute(name, gpx){
   try { localStorage.setItem(LOCAL_ROUTES, JSON.stringify(list)); }
   catch { throw new Error('この端末の保存領域が一杯です'); }
 }
+function saveLocalRoutes(list){
+  try { localStorage.setItem(LOCAL_ROUTES, JSON.stringify(list)); } catch {}
+}
 function deleteLocalRoute(name){
   try { localStorage.setItem(LOCAL_ROUTES, JSON.stringify(localRoutes().filter(r => r.name !== name))); } catch {}
 }
@@ -4242,29 +4364,31 @@ async function showSavedRoutes(){
       <div id="driveRoutes">${signedIn ? '<div class="p-empty">読み込み中…</div>' : ''}</div>
       ${local.length ? `
         <div class="p-sec-title">この端末に保存したルート</div>
-        <ul class="p-list" id="localRoutes">
-          ${local.map((r,i) => `
-            <li data-i="${i}">
-              <span class="sg-ic"><svg viewBox="0 0 24 24"><path d="M17 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V7l-4-4zm-5 16a3 3 0 1 1 0-6 3 3 0 0 1 0 6zm3-10H6V5h9v4z"/></svg></span>
-              <span class="li-txt">${esc(r.name)}<div class="li-sub">${fmtWhen(r.savedAt)}</div></span>
-              <button class="iconbtn small li-del" data-del="${i}" title="削除">
-                <svg viewBox="0 0 24 24"><path d="M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
-              </button>
-            </li>`).join('')}
-        </ul>` : ''}
+        ${groupByFolder(local.map((r,i) => ({ ...r, title:r.name, _i:i }))).map(g => `
+          ${folderHead(g)}
+          ${g.items.length ? `
+          <ul class="p-list local-list">
+            ${g.items.map(r => `
+              <li data-i="${r._i}">
+                <span class="sg-ic"><svg viewBox="0 0 24 24"><path d="M17 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V7l-4-4zm-5 16a3 3 0 1 1 0-6 3 3 0 0 1 0 6zm3-10H6V5h9v4z"/></svg></span>
+                <span class="li-txt">${esc(r.name)}<div class="li-sub">${fmtWhen(r.savedAt)}</div></span>
+                <button class="iconbtn small li-edit" data-edit="${r._i}" title="名前・フォルダを変える">
+                  <svg viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75z"/></svg>
+                </button>
+              </li>`).join('')}
+          </ul>` : ''}`).join('')}` : ''}
     </div>`);
 
   const loginBtn = $('#routeLoginBtn');
   if (loginBtn) loginBtn.onclick = async () => { if (await driveSignIn()) showSavedRoutes(); };
 
-  const localList = $('#localRoutes');
-  if (localList) localList.addEventListener('click', e => {
-    const del = e.target.closest('[data-del]');
-    if (del){ deleteLocalRoute(localRoutes()[+del.dataset.del].name); showSavedRoutes(); return; }
+  $$('.local-list').forEach(list => list.addEventListener('click', e => {
+    const ed = e.target.closest('[data-edit]');
+    if (ed){ editLocalRoute(+ed.dataset.edit); return; }
     const li = e.target.closest('li'); if (!li) return;
     const r = localRoutes()[+li.dataset.i];
     openSavedRoute(() => Promise.resolve(r.gpx), r.name, null);
-  });
+  }));
 
   if (!signedIn) return;
 
@@ -4278,32 +4402,80 @@ async function showSavedRoutes(){
 
   const box = $('#driveRoutes');
   if (!box) return;
-  box.innerHTML = files.length ? `
-    <ul class="p-list" id="driveList">
-      ${files.map(f => `
-        <li data-id="${esc(f.id)}" data-name="${esc(f.name)}">
+
+  // フォルダごとに並べる（フォルダ名はファイルの appProperties に持たせている）
+  const items = files.map(f => ({
+    id:f.id, name:f.name, when:f.modifiedTime,
+    folder:(f.appProperties && f.appProperties.folder) || '',
+  }));
+  istate.routeFolders = [...new Set(items.map(i => i.folder).filter(Boolean))];
+  const groups = groupByFolder(items);
+
+  box.innerHTML = items.length ? groups.map(g => `
+    ${folderHead(g)}
+    ${g.items.length ? `
+    <ul class="p-list drive-list">
+      ${g.items.map(f => `
+        <li data-id="${esc(f.id)}" data-name="${esc(f.name)}" data-folder="${esc(f.folder)}">
           <span class="sg-ic"><svg viewBox="0 0 24 24"><path d="M7.7 3 1.2 14.3l3.2 5.6L11 8.6 7.7 3zm1.6 0 6.5 11.3H22L15.5 3H9.3zM6.1 21h13l3.2-5.6H9.3L6.1 21z"/></svg></span>
-          <span class="li-txt">${esc(f.name)}<div class="li-sub">${fmtWhen(f.modifiedTime)}</div></span>
-          <button class="iconbtn small li-del" data-trash="${esc(f.id)}" title="ゴミ箱へ移動">
-            <svg viewBox="0 0 24 24"><path d="M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+          <span class="li-txt">${esc(f.name)}<div class="li-sub">${fmtWhen(f.when)}</div></span>
+          <button class="iconbtn small li-edit" data-edit="${esc(f.id)}" title="名前・フォルダを変える">
+            <svg viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75z"/></svg>
           </button>
         </li>`).join('')}
-    </ul>`
+    </ul>` : '<div class="p-empty" style="padding:2px 0 10px">（空のフォルダ）</div>'}`).join('')
     : `<div class="p-empty">「${esc(DRIVE_FOLDER)}」フォルダにはまだルートがありません。<br>
         ルート作成バーの「保存」から保存できます。</div>`;
 
-  const list = $('#driveList');
-  if (list) list.addEventListener('click', async e => {
-    const trash = e.target.closest('[data-trash]');
-    if (trash){
-      const li = trash.closest('li');
-      if (!confirm(`「${li.dataset.name}」をゴミ箱へ移動しますか？（ドライブのゴミ箱から元に戻せます）`)) return;
-      try { await driveTrash(trash.dataset.trash); toast('ゴミ箱へ移動しました'); showSavedRoutes(); }
-      catch (err){ toast(err.message); }
+  $$('.drive-list').forEach(list => list.addEventListener('click', async e => {
+    const ed = e.target.closest('[data-edit]');
+    if (ed){
+      const li = ed.closest('li');
+      editDriveRoute(li.dataset.id, li.dataset.name, li.dataset.folder);
       return;
     }
     const li = e.target.closest('li'); if (!li) return;
     openSavedRoute(() => driveDownload(li.dataset.id), li.dataset.name, li.dataset.id);
+  }));
+}
+
+/** ドライブに保存したルートの名前とフォルダを変える */
+function editDriveRoute(id, name, folder){
+  openItemEditor('route', { title:name.replace(/\.gpx$/i, ''), folder }, {
+    onSave: async patch => {
+      const fileName = patch.name.replace(/\.gpx$/i, '') + '.gpx';
+      await driveUpdateRoute(id, fileName, patch.folder);
+      toast('変更しました');
+      showSavedRoutes();
+    },
+    onDelete: async () => {
+      await driveTrash(id);
+      toast('ゴミ箱へ移動しました');
+      showSavedRoutes();
+    },
+  });
+}
+
+
+/** この端末に保存したルートの名前とフォルダを変える */
+function editLocalRoute(i){
+  const list = localRoutes();
+  const r = list[i];
+  if (!r) return;
+  openItemEditor('route', { title:r.name, folder:r.folder || '' }, {
+    onSave: async patch => {
+      r.name = patch.name;
+      r.folder = patch.folder;
+      saveLocalRoutes(list);
+      toast('変更しました');
+      showSavedRoutes();
+    },
+    onDelete: async () => {
+      list.splice(i, 1);
+      saveLocalRoutes(list);
+      toast('削除しました');
+      showSavedRoutes();
+    },
   });
 }
 
@@ -5541,6 +5713,186 @@ function bindTrackUI(){
 <script>
 'use strict';
 
+const NO_FOLDER = '未分類';
+
+/** 使われているフォルダ名を集める（空のフォルダも覚えておく） */
+const FOLDER_STORE = 'gsimap.folders';
+
+function knownFolders(){
+  let extra = [];
+  try { extra = JSON.parse(localStorage.getItem(FOLDER_STORE)) || []; } catch {}
+  const used = [
+    ...state.saved.map(p => p.folder || ''),
+    ...(istate.routeFolders || []),
+  ];
+  const all = [...new Set([...extra, ...used].filter(Boolean))];
+  return all.sort((a, b) => a.localeCompare(b, 'ja'));
+}
+
+function rememberFolder(name){
+  if (!name) return;
+  const list = knownFolders();
+  if (list.includes(name)) return;
+  try { localStorage.setItem(FOLDER_STORE, JSON.stringify([...list, name])); } catch {}
+}
+
+function forgetFolder(name){
+  try {
+    const list = (JSON.parse(localStorage.getItem(FOLDER_STORE)) || []).filter(f => f !== name);
+    localStorage.setItem(FOLDER_STORE, JSON.stringify(list));
+  } catch {}
+}
+
+const istate = {
+  routeFolders: [],     // ルート側で使われているフォルダ名（一覧を作るときに更新する）
+  target: null,         // いま編集しているもの
+};
+
+/** フォルダごとにまとめる。[{ folder, items:[...] }] を名前順で返す */
+function groupByFolder(items){
+  const map = new Map();
+  for (const it of items){
+    const f = it.folder || '';
+    if (!map.has(f)) map.set(f, []);
+    map.get(f).push(it);
+  }
+  // 空のフォルダも見出しだけ出す（移動先として選べるように）
+  for (const f of knownFolders()) if (!map.has(f)) map.set(f, []);
+
+  return [...map.entries()]
+    .sort((a, b) => (a[0] === '' ? 1 : b[0] === '' ? -1 : a[0].localeCompare(b[0], 'ja')))
+    .map(([folder, list]) => ({ folder, items:list }));
+}
+
+/** フォルダの見出し。中身が無いフォルダは、その場で消せるようにする */
+function folderHead(g){
+  const name = g.folder || NO_FOLDER;
+  const empty = g.items.length === 0 && g.folder;
+  return `<div class="fold-head">
+    <svg viewBox="0 0 24 24"><path d="M10 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-2z"/></svg>
+    ${esc(name)}<span class="fold-n">${g.items.length}</span>
+    ${empty ? `<button class="iconbtn small fold-del" data-delfolder="${esc(g.folder)}"
+        title="この空のフォルダを消す"><svg viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg></button>` : ''}
+  </div>`;
+}
+
+/* ---------- 編集画面 ---------- */
+
+/**
+ * 名前・フォルダ・アイコンを変える画面を開く。
+ *   kind  … 'place' か 'route'
+ *   item  … 対象
+ *   onSave(値), onDelete() … 呼び出し側で保存の仕方が違うので渡してもらう
+ */
+function openItemEditor(kind, item, handlers){
+  istate.target = { kind, item, handlers };
+  const isPlace = kind === 'place';
+
+  const folders = knownFolders();
+  const cur = item.folder || '';
+  $('#itemModalTitle').textContent = isPlace ? '地点の設定' : 'ルートの設定';
+  $('#itemIconWrap').classList.toggle('hidden', !isPlace);
+
+  $('#itemName').value = item.title || item.name || '';
+  $('#itemFolder').innerHTML =
+    `<option value="">${NO_FOLDER}</option>`
+    + folders.map(f => `<option value="${esc(f)}"${f === cur ? ' selected' : ''}>${esc(f)}</option>`).join('')
+    + '<option value="__new__">＋ 新しいフォルダ…</option>';
+  $('#itemFolderNew').value = '';
+  $('#itemFolderNew').classList.add('hidden');
+
+  if (isPlace){
+    const sel = item.icon || PLACE_ICONS[0].id;
+    const groups = {};
+    PLACE_ICONS.forEach(ic => (groups[ic.group] = groups[ic.group] || []).push(ic));
+    $('#itemIcons').innerHTML = Object.entries(groups).map(([g, list]) => `
+      <div class="ico-group">${esc(g)}</div>
+      <div class="ico-grid">
+        ${list.map(ic => `
+          <button type="button" class="icopt ${ic.id === sel ? 'on' : ''}"
+                  data-icon="${ic.id}" title="${esc(ic.name)}">
+            <span class="sp-mark" style="background:${ic.color}">
+              <svg viewBox="0 0 24 24"><path d="${ICON_PATH[ic.id]}"/></svg></span>
+            <span class="ico-name">${esc(ic.name)}</span>
+          </button>`).join('')}
+      </div>`).join('');
+    istate.icon = sel;
+  }
+
+  $('#itemDelete').classList.toggle('hidden', !(handlers && handlers.onDelete));
+  $('#itemModal').classList.remove('hidden');
+  setTimeout(() => $('#itemName').focus(), 50);
+}
+
+function closeItemEditor(){
+  $('#itemModal').classList.add('hidden');
+  istate.target = null;
+}
+
+function itemFolderValue(){
+  const sel = $('#itemFolder').value;
+  if (sel !== '__new__') return sel;
+  return $('#itemFolderNew').value.trim();
+}
+
+function bindItemsUI(){
+  // 空フォルダの削除（一覧はその都度作り直すので、まとめて受ける）
+  document.addEventListener('click', e => {
+    const b = e.target.closest('[data-delfolder]');
+    if (!b) return;
+    forgetFolder(b.dataset.delfolder);
+    toast(`フォルダ「${b.dataset.delfolder}」を消しました`);
+    if (document.querySelector('.saved-list') || document.querySelector('#savedLogin')) showSaved();
+    else showSavedRoutes();
+  });
+
+  $('#itemCancel').onclick = closeItemEditor;
+  $('#itemModal').addEventListener('click', e => {
+    if (e.target.id === 'itemModal') closeItemEditor();
+  });
+
+  $('#itemFolder').onchange = () => {
+    const isNew = $('#itemFolder').value === '__new__';
+    $('#itemFolderNew').classList.toggle('hidden', !isNew);
+    if (isNew) setTimeout(() => $('#itemFolderNew').focus(), 30);
+  };
+
+  $('#itemIcons').addEventListener('click', e => {
+    const b = e.target.closest('.icopt');
+    if (!b) return;
+    $$('#itemIcons .icopt').forEach(x => x.classList.remove('on'));
+    b.classList.add('on');
+    istate.icon = b.dataset.icon;
+  });
+
+  $('#itemSave').onclick = async () => {
+    const t = istate.target;
+    if (!t) return;
+    const name = $('#itemName').value.trim();
+    if (!name){ toast('名前を入力してください'); return; }
+    const folder = itemFolderValue();
+    rememberFolder(folder);
+    const patch = { name, folder };
+    if (t.kind === 'place') patch.icon = istate.icon;
+    closeItemEditor();
+    try { await t.handlers.onSave(patch); }
+    catch (e){ toast('保存できませんでした：' + e.message, 6000); }
+  };
+
+  $('#itemDelete').onclick = async () => {
+    const t = istate.target;
+    if (!t) return;
+    if (!confirm(`「${$('#itemName').value.trim()}」を削除します。よろしいですか？`)) return;
+    closeItemEditor();
+    try { await t.handlers.onDelete(); }
+    catch (e){ toast('削除できませんでした：' + e.message, 6000); }
+  };
+}
+
+</script>
+<script>
+'use strict';
+
 // 公開サーバは混み合って 504 を返すことがあるので、順に試す
 const OVERPASS_URLS = [
   'https://overpass-api.de/api/interpreter',
@@ -6501,6 +6853,9 @@ function init(){
   bindGoogleUI();
   bindRouteUI();
   bindDriveUI();
+  bindItemsUI();
+  // 前回ログインしていれば、画面を出さずに続きから使えるようにする
+  silentSignIn();
   bindTrackUI();
   bindOsmUI();
   bindOfflineUI();
@@ -7127,18 +7482,72 @@ function showPlace(place){
 
 const PLACE_PINS_STORE = 'gsimap.placePins';
 const PLACE_ICONS = [
-  { id:'pin',   name:'ピン',   color:'#1a73e8' },
-  { id:'flag',  name:'旗',     color:'#188038' },
-  { id:'star',  name:'星',     color:'#f9ab00' },
-  { id:'alert', name:'注意',   color:'#d93025' },
-  { id:'camera',name:'写真',   color:'#9334e6' },
+  // 目印
+  { id:'pin',   name:'ピン',      group:'目印', color:'#1a73e8' },
+  { id:'flag',  name:'旗',        group:'目印', color:'#188038' },
+  { id:'star',  name:'お気に入り', group:'目印', color:'#f9ab00' },
+  { id:'alert', name:'注意',      group:'目印', color:'#d93025' },
+  { id:'photo', name:'写真',      group:'目印', color:'#9334e6' },
+  // 移動
+  { id:'car',   name:'車・駐車',   group:'移動', color:'#1a73e8' },
+  { id:'bike',  name:'自転車',     group:'移動', color:'#1a73e8' },
+  { id:'train', name:'駅',        group:'移動', color:'#5f6368' },
+  { id:'bus',   name:'バス停',     group:'移動', color:'#5f6368' },
+  { id:'boat',  name:'船・港',     group:'移動', color:'#0288d1' },
+  { id:'gas',   name:'給油',      group:'移動', color:'#e8710a' },
+  // アウトドア
+  { id:'tent',  name:'キャンプ',   group:'アウトドア', color:'#188038' },
+  { id:'hike',  name:'登山口',     group:'アウトドア', color:'#188038' },
+  { id:'summit',name:'山頂',      group:'アウトドア', color:'#5d4037' },
+  { id:'hut',   name:'山小屋',     group:'アウトドア', color:'#5d4037' },
+  { id:'fish',  name:'釣り',      group:'アウトドア', color:'#0288d1' },
+  { id:'ski',   name:'スキー',     group:'アウトドア', color:'#0288d1' },
+  { id:'climb', name:'岩場',      group:'アウトドア', color:'#5d4037' },
+  { id:'water', name:'水場',      group:'アウトドア', color:'#0288d1' },
+  { id:'fall',  name:'滝',        group:'アウトドア', color:'#0288d1' },
+  { id:'view',  name:'展望',      group:'アウトドア', color:'#9334e6' },
+  { id:'tree',  name:'樹木',      group:'アウトドア', color:'#188038' },
+  { id:'paw',   name:'動物・観察', group:'アウトドア', color:'#188038' },
+  { id:'onsen', name:'温泉',      group:'アウトドア', color:'#e8710a' },
+  // 生活
+  { id:'food',  name:'食事',      group:'生活', color:'#e8710a' },
+  { id:'cafe',  name:'喫茶',      group:'生活', color:'#5d4037' },
+  { id:'shop',  name:'買い物',     group:'生活', color:'#9334e6' },
+  { id:'toilet',name:'トイレ',     group:'生活', color:'#5f6368' },
+  { id:'home',  name:'家・拠点',   group:'生活', color:'#1a73e8' },
+  { id:'work',  name:'現場・仕事', group:'生活', color:'#e8710a' },
 ];
 const ICON_PATH = {
   pin:   'M12 2a7 7 0 0 0-7 7c0 5.25 7 13 7 13s7-7.75 7-13a7 7 0 0 0-7-7zm0 9.5A2.5 2.5 0 1 1 12 6.5a2.5 2.5 0 0 1 0 5z',
   flag:  'M14.4 6 14 4H5v17h2v-7h5.6l.4 2h7V6z',
   star:  'm12 17.27 6.18 3.73-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z',
   alert: 'M1 21h22L12 2zm12-3h-2v-2h2zm0-4h-2v-4h2z',
-  camera:'M9 2 7.17 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-3.17L15 2zm3 15a5 5 0 1 1 0-10 5 5 0 0 1 0 10z',
+  photo: 'M9 2 7.17 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-3.17L15 2zm3 15a5 5 0 1 1 0-10 5 5 0 0 1 0 10z',
+  car:   'M18.92 6.01C18.72 5.42 18.16 5 17.5 5h-11c-.66 0-1.21.42-1.42 1.01L3 12v8c0 .55.45 1 1 1h1c.55 0 1-.45 1-1v-1h12v1c0 .55.45 1 1 1h1c.55 0 1-.45 1-1v-8zM6.5 16a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zm11 0a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zM5 11l1.5-4.5h11L19 11z',
+  bike:  'M15.5 5.5a2 2 0 1 0 0-4 2 2 0 0 0 0 4zM5 12a5 5 0 1 0 0 10 5 5 0 0 0 0-10zm0 8.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7zm5.8-10 2.4-2.4.8.8a5.9 5.9 0 0 0 4 1.6V8.5c-1.1 0-2.1-.5-2.8-1.2l-1.9-1.9c-.4-.3-.8-.4-1.3-.4s-1 .2-1.3.5L8 8.1a1.8 1.8 0 0 0 0 2.5L11 13v5h2v-6.2zM19 12a5 5 0 1 0 0 10 5 5 0 0 0 0-10zm0 8.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z',
+  train: 'M12 2c-4 0-8 .5-8 4v9.5A3.5 3.5 0 0 0 7.5 19L6 20.5v.5h12v-.5L16.5 19a3.5 3.5 0 0 0 3.5-3.5V6c0-3.5-3.58-4-8-4zM7.5 17a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zM11 10H6V6h5zm2 0V6h5v4zm3.5 7a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3z',
+  bus:   'M4 16c0 .88.39 1.67 1 2.22V20a1 1 0 0 0 1 1h1a1 1 0 0 0 1-1v-1h8v1a1 1 0 0 0 1 1h1a1 1 0 0 0 1-1v-1.78c.61-.55 1-1.34 1-2.22V6c0-3.5-3.58-4-8-4s-8 .5-8 4zm3.5 1a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zm9 0a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3zM18 11H6V6h12z',
+  boat:  'M20 21c-1.4 0-2.8-.5-4-1.5-2.4 2-5.6 2-8 0-1.2 1-2.6 1.5-4 1.5H2v2h2c1.4 0 2.7-.4 4-1 2.5 1.3 5.5 1.3 8 0 1.3.6 2.6 1 4 1h2v-2zM3.9 15.4 5.5 10h13l1.6 5.4c.8.3 1.6.5 2.4.6L20 8.6V4a2 2 0 0 0-2-2h-3V0H9v2H6a2 2 0 0 0-2 2v4.6L1.5 16c.8-.1 1.6-.3 2.4-.6zM6 4h12v4H6z',
+  gas:   'M19.77 7.23 16.06 3.5 15 4.56l2.11 2.11a2.5 2.5 0 0 0 1.39 4.77V18a1 1 0 0 1-2 0V14a2 2 0 0 0-2-2h-1V5a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v16h9v-7.5h1.5v5a2.5 2.5 0 0 0 5 0V9c0-.69-.28-1.32-.73-1.77zM12 10H6V5h6zm6 0a1 1 0 1 1 0-2 1 1 0 0 1 0 2z',
+  tent:  'M12 3 2 21h20zm0 4.2 6.3 11.3h-4.1L12 14.4l-2.2 4.1H5.7z',
+  hike:  'M13.5 5.5a2 2 0 1 0 0-4 2 2 0 0 0 0 4zM17 22v-8l-2.4-2.3.7-3.5c1.2 1.5 3 2.5 5.2 2.6V9c-1.9 0-3.5-1-4.3-2.4l-1-1.6c-.4-.6-1-1-1.7-1-.3 0-.5 0-.8.1L7 4.7V10h2V6.3l1.8-.7L9.2 14 4.3 13l-.4 2 6.9 1.4V22h2v-7.1l-1.5-1.4.6-3z',
+  summit:'M14 6l-3.8 5.1 1.4 1.9L14 9.5 20 18H10.4L7.5 14 2 22h20zM7.5 10.5 9 8.6 7.5 6.6 6 8.6z',
+  hut:   'M12 3 2 12h3v9h14v-9h3zm0 2.7L17 10v9h-3v-6h-4v6H7v-9z',
+  fish:  'M12 6c-3.2 0-6.4 1.6-8.6 4.2L2 8v8l1.4-2.2C5.6 16.4 8.8 18 12 18c4.4 0 8.3-2.7 10-6-1.7-3.3-5.6-6-10-6zm3 7a1 1 0 1 1 0-2 1 1 0 0 1 0 2z',
+  ski:   'M18.5 5.5a2 2 0 1 0 0-4 2 2 0 0 0 0 4zM4 17.5l1.1 1.5 4.6-3.4-1.2-1.7zM21.6 18.2 12.3 12l2-3.4 3.2 1.9 1-1.7-3.9-2.3c-.5-.3-1.1-.4-1.7-.2-.6.2-1 .6-1.3 1.1L9 12.2l-6.2 4.3 1.1 1.6 6.8-4.7 8.9 6.2c.4.3 1 .2 1.3-.2s.2-1-.2-1.2z',
+  climb: 'M3 21h18L14 8l-3 5-2-3zm2.5-12a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z',
+  water: 'M12 2s6 7 6 11a6 6 0 1 1-12 0c0-4 6-11 6-11zm0 3.7C10.5 7.7 8 11.2 8 13a4 4 0 1 0 8 0c0-1.8-2.5-5.3-4-7.3z',
+  fall:  'M7 2v9a5 5 0 0 0 10 0V2h-2v9a3 3 0 0 1-6 0V2zM4 15c1 1.3 1 2.7 0 4l1.5 1.2c1.6-2 1.6-4.4 0-6.4zm4.5 0c1 1.3 1 2.7 0 4L10 20.2c1.6-2 1.6-4.4 0-6.4zm4.5 0c1 1.3 1 2.7 0 4l1.5 1.2c1.6-2 1.6-4.4 0-6.4zm4.5 0c1 1.3 1 2.7 0 4L19 20.2c1.6-2 1.6-4.4 0-6.4z',
+  view:  'M12 6c-5 0-9.3 3.1-11 7 1.7 3.9 6 7 11 7s9.3-3.1 11-7c-1.7-3.9-6-7-11-7zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-8a3 3 0 1 0 0 6 3 3 0 0 0 0-6z',
+  tree:  'M12 2 5 12h3l-4 6h6v4h4v-4h6l-4-6h3z',
+  paw:   'M12 14c-2.8 0-5 1.8-5 4a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2c0-2.2-2.2-4-5-4zM6.5 12a2 2 0 1 0 0-4 2 2 0 0 0 0 4zm11 0a2 2 0 1 0 0-4 2 2 0 0 0 0 4zM9.5 8a2 2 0 1 0 0-4 2 2 0 0 0 0 4zm5 0a2 2 0 1 0 0-4 2 2 0 0 0 0 4z',
+  onsen: 'M7 21v-6a3 3 0 0 1 3-3h4a3 3 0 0 1 3 3v6zm0-11c-1-1-1-2 0-3s1-2 0-3L5.6 5.4c1 1 1 2 0 3s-1 2 0 3zm5 0c-1-1-1-2 0-3s1-2 0-3l-1.4 1.4c1 1 1 2 0 3s-1 2 0 3zm5 0c-1-1-1-2 0-3s1-2 0-3l-1.4 1.4c1 1 1 2 0 3s-1 2 0 3z',
+  food:  'M11 9H9V2H7v7H5V2H3v7c0 2.1 1.6 3.8 3.5 4v9h3v-9c1.9-.2 3.5-1.9 3.5-4V2h-2zM16 6v8h2.5v8h3V2c-3 0-5.5 1.8-5.5 4z',
+  cafe:  'M20 3H4v10a5 5 0 0 0 5 5h6a5 5 0 0 0 5-5v-3h1a3 3 0 0 0 0-6zm0 4h-1V5h1a1 1 0 0 1 0 2zM4 20h16v2H4z',
+  shop:  'M18 6h-2a4 4 0 0 0-8 0H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2zm-6-2a2 2 0 0 1 2 2h-4a2 2 0 0 1 2-2z',
+  toilet:'M6 2a2 2 0 1 1 0 4 2 2 0 0 1 0-4zm2 5H4l-2 7h2v8h4v-8h2zm10-5a2 2 0 1 1 0 4 2 2 0 0 1 0-4zm2.5 5h-5L13 22h3v0h4l-1.5-8H21z',
+  home:  'M12 3 2 12h3v9h6v-6h2v6h6v-9h3z',
+  work:  'M20 6h-4V4a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2H4a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2zM10 4h4v2h-4z',
 };
 const iconDef = id => PLACE_ICONS.find(i => i.id === id) || PLACE_ICONS[0];
 
@@ -7219,6 +7628,7 @@ async function savePlace(place){
     state.saved.unshift({
       title: $('#placeName').value.trim() || '保存した地点',
       icon,
+      folder: '',
       lng: place.lng, lat: place.lat,
       savedAt: new Date().toISOString(),
     });
@@ -7239,6 +7649,11 @@ function showSaved(opts = {}){
       ? `${state.saved.length} 件・Google ドライブと共有（どの端末でも同じ一覧）`
       : `${state.saved.length} 件・この端末のみ`;
 
+  // フォルダごとにまとめて出す
+  const groups = state.saved.length || knownFolders().length
+    ? groupByFolder(state.saved.map((p, i) => ({ ...p, _i:i })))
+    : [];
+
   openPanel(`
     <div class="p-body">
       <h2 class="p-title">保存した場所</h2>
@@ -7247,18 +7662,20 @@ function showSaved(opts = {}){
         <button class="btn primary" id="savedLogin" style="margin:2px 0 12px">
           Google にログインして端末間で共有
         </button>`}
-      ${state.saved.length ? `
-        <ul class="p-list" id="savedList">
-          ${state.saved.map((p,i) => `
-            <li data-i="${i}">
+      ${state.saved.length ? groups.map(g => `
+        ${folderHead(g)}
+        ${g.items.length ? `
+        <ul class="p-list saved-list">
+          ${g.items.map(p => `
+            <li data-i="${p._i}">
               <span class="sg-ic" style="background:${iconDef(p.icon).color}">
                 <svg viewBox="0 0 24 24" style="fill:#fff"><path d="${ICON_PATH[iconDef(p.icon).id]}"/></svg></span>
               <span class="li-txt">${esc(p.title)}<div class="li-sub">${fmtLL(p.lng,p.lat)}</div></span>
-              <button class="iconbtn small li-del" data-del="${i}" title="削除">
-                <svg viewBox="0 0 24 24"><path d="M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+              <button class="iconbtn small li-edit" data-edit="${p._i}" title="名前・フォルダ・アイコンを変える">
+                <svg viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75z"/></svg>
               </button>
             </li>`).join('')}
-        </ul>`
+        </ul>` : '<div class="p-empty" style="padding:2px 0 10px">（空のフォルダ）</div>'}`).join('')
       : `<div class="p-empty">まだ保存された場所はありません。地図を右クリック、または場所の詳細から「保存」できます。</div>`}
       ${signed ? `<div class="p-empty">保存先：マイドライブ ＞ MAP TOOL ＞ places.json</div>` : ''}
     </div>`);
@@ -7266,26 +7683,42 @@ function showSaved(opts = {}){
   const login = $('#savedLogin');
   if (login) login.onclick = async () => { if (await driveSignIn()) showSaved(); };
 
-  const list = $('#savedList');
-  if (list) list.addEventListener('click', e => {
-    const del = e.target.closest('[data-del]');
-    if (del){
-      state.saved.splice(+del.dataset.del, 1);
-      persistSaved();
-      pushPlacesQuietly();                 // 削除もドライブに反映
-      showSaved();
-      return;
-    }
-    const li = e.target.closest('li'); if (!li) return;
-    goToPlace(state.saved[+li.dataset.i]);
-  });
+  $$('.saved-list').forEach(list => list.addEventListener('click', e => {
+    const ed = e.target.closest('[data-edit]');
+    if (ed){ editSavedPlace(+ed.dataset.edit); return; }
+    const li = e.target.closest('li');
+    if (!li) return;
+    const p = state.saved[+li.dataset.i];
+    goToPlace(p);
+  }));
+}
 
-  // 他の端末での変更を取り込む
-  if (signed && !opts.synced){
-    syncPlaces()
-      .then(ok => { if (ok) showSaved({ synced:true }); })
-      .catch(e => { if (e.message !== 'SIGNED_OUT') toast('同期に失敗しました：' + e.message, 5000); });
-  }
+/** 保存した地点の名前・フォルダ・アイコンを変える */
+function editSavedPlace(i){
+  const p = state.saved[i];
+  if (!p) return;
+  openItemEditor('place', p, {
+    onSave: async patch => {
+      p.title = patch.name;
+      p.folder = patch.folder;
+      p.icon = patch.icon;
+      persistSaved();
+      showSaved();
+      if (isSignedIn()){
+        try { await pushPlacesQuietly(); } catch { toast('ドライブへの反映に失敗しました', 5000); }
+      }
+      toast('変更しました');
+    },
+    onDelete: async () => {
+      state.saved.splice(i, 1);
+      persistSaved();
+      showSaved();
+      if (isSignedIn()){
+        try { await pushPlacesQuietly(); } catch {}
+      }
+      toast('削除しました');
+    },
+  });
 }
 
 /* ---------- 共有 / コピー ---------- */

@@ -1267,6 +1267,19 @@ body.sv-open .panel,body.sv-open .paneltab{display:none;}
 </div>
 
 <!-- ============ Google マップの座標を貼り付け ============ -->
+<!-- ============ 現在地の利用を確認する ============ -->
+<div id="geoModal" class="modal hidden">
+  <div class="modal-card card">
+    <h3 id="geoModalTitle">現在地を使いますか？</h3>
+    <div id="geoModalBody"></div>
+    <div class="modal-btns">
+      <span class="spacer"></span>
+      <button class="btn" id="geoLater">あとで</button>
+      <button class="btn primary" id="geoYes">はい</button>
+    </div>
+  </div>
+</div>
+
 <div id="pasteModal" class="modal hidden">
   <div class="modal-card card">
     <h3>Google マップの座標を貼り付け</h3>
@@ -4665,6 +4678,65 @@ function stopWatch(){
  * ブラウザの決まりで、サイト側から勝手に許可することはできない。
  * 端末ごとに設定する場所が違うので、使っている端末に合わせて出す。
  */
+/* ---------- 現在地を使う前の確認 ---------- */
+
+/** いまの許可の状態。'granted' | 'prompt' | 'denied' | 'unknown' */
+async function geoState(){
+  if (!navigator.geolocation) return 'unsupported';
+  if (!window.isSecureContext) return 'insecure';
+  try {
+    const st = await navigator.permissions.query({ name:'geolocation' });
+    return st.state;                       // granted / prompt / denied
+  } catch {
+    return 'unknown';                      // iOS など、この API が無い端末
+  }
+}
+
+function showGeoModal(html, opts){
+  $('#geoModalTitle').textContent = (opts && opts.title) || '現在地を使いますか？';
+  $('#geoModalBody').innerHTML = html;
+  $('#geoYes').classList.toggle('hidden', !!(opts && opts.hideYes));
+  $('#geoLater').textContent = (opts && opts.hideYes) ? '閉じる' : 'あとで';
+  $('#geoModal').classList.remove('hidden');
+}
+function closeGeoModal(){ $('#geoModal').classList.add('hidden'); }
+
+/**
+ * 現在地ボタンを押したとき。
+ *
+ * ブラウザの決まりで、サイト側から位置情報を勝手に有効にはできない。
+ * できるのは「確認を出すこと」までなので、
+ *   まだ聞いていない → 「はい」で確認を出す
+ *   断られている     → 設定の変え方を案内する
+ * という形にしている。
+ */
+async function onGeoButton(){
+  if (tstate.follow){ setFollow(false); return; }      // 追従を解除するだけ
+
+  const st = await geoState();
+  if (st === 'granted' || st === 'unknown'){ setFollow(true); return; }
+
+  if (st === 'unsupported'){ toast('この端末では現在地を取得できません'); return; }
+  if (st === 'insecure'){
+    showGeoModal('<p>現在地の取得は <b>https</b> の接続でのみ使えます。'
+      + 'いまは <code>http://</code> で開いているため利用できません。</p>', { hideYes:true });
+    return;
+  }
+  if (st === 'denied'){
+    showGeoModal(`<p>このサイトで位置情報が<b>「許可しない」</b>になっています。
+      ブラウザの決まりで、アプリ側から有効にすることはできません。
+      お手数ですが、次の手順で変更してください。</p>
+      <p class="modal-note">${geoDeniedHelp()}</p>`, { title:'位置情報が許可されていません', hideYes:true });
+    return;
+  }
+  // まだ聞いていない状態。「はい」を押した流れでブラウザの確認を出す
+  showGeoModal(`<p>地図に現在地を表示します。
+    「はい」を押すと、ブラウザから<b>「位置情報の使用を許可しますか？」</b>と聞かれるので、
+    <b>「許可」</b>を選んでください。</p>
+    <p class="modal-note">位置情報はこの端末の中だけで使います。
+    どこかへ送ることはありません。</p>`);
+}
+
 function geoDeniedHelp(){
   const ua = navigator.userAgent;
   const ios = /iPhone|iPad|iPod/.test(ua);
@@ -4681,9 +4753,11 @@ function geoDeniedHelp(){
 
 function onWatchError(err){
   if (err.code === 1){
-    toast(geoDeniedHelp(), 12000);
     setFollow(false);
     if (nav.active) endNavigation();
+    showGeoModal(`<p>位置情報が使えませんでした。次の手順で許可してください。</p>
+      <p class="modal-note">${geoDeniedHelp()}</p>`,
+      { title:'位置情報が許可されていません', hideYes:true });
     return;
   }
   const msg = { 2:'現在地を取得できませんでした（電波・GPS の状態をご確認ください）',
@@ -5418,7 +5492,10 @@ function updateTrackBar(){
 /* ---------- UI 配線 ---------- */
 
 function bindTrackUI(){
-  $('#geoBtn').onclick   = toggleFollow;
+  $('#geoBtn').onclick   = onGeoButton;
+  $('#geoYes').onclick    = () => { closeGeoModal(); setFollow(true); };
+  $('#geoLater').onclick  = closeGeoModal;
+  $('#geoModal').addEventListener('click', e => { if (e.target.id === 'geoModal') closeGeoModal(); });
   $('#tkHeadUp').onclick  = toggleHeadingUp;
   $('#tkReroute').onclick = toggleAutoReroute;
   $('#tkPause').onclick   = toggleNavPause;

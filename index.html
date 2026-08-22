@@ -943,6 +943,10 @@ display:flex;align-items:center;justify-content:center;
 .btn.danger{color:#d93025;}
 .btn.danger:hover{background:rgba(217,48,37,.08);}
 .fold-head .fold-del{margin-left:4px;}
+.fold-head.off{opacity:.45;}
+.fold-show{display:flex;align-items:center;flex:none;cursor:pointer;}
+.fold-show input{width:15px;height:15px;margin:0;accent-color:var(--blue);cursor:pointer;}
+.fold-spacer{width:15px;flex:none;}
 </style>
 </head>
 <body>
@@ -1312,8 +1316,11 @@ display:flex;align-items:center;justify-content:center;
     <div class="modal-field">
       <label class="fl">フォルダ<span>分けて整理できます</span></label>
       <select id="itemFolder" class="fsel"></select>
-      <input id="itemFolderNew" class="hidden" type="text" placeholder="新しいフォルダの名前"
-             autocomplete="off" spellcheck="false" style="margin-top:6px">
+      <div id="itemNewWrap" class="hidden" style="margin-top:6px">
+        <select id="itemFolderParent" class="fsel"></select>
+        <input id="itemFolderNew" type="text" placeholder="新しいフォルダの名前"
+               autocomplete="off" spellcheck="false" style="margin-top:6px">
+      </div>
     </div>
     <div class="modal-field hidden" id="itemIconWrap">
       <label class="fl">アイコン</label>
@@ -5714,10 +5721,25 @@ function bindTrackUI(){
 'use strict';
 
 const NO_FOLDER = '未分類';
+const FOLDER_SEP = '/';        // フォルダの区切り（例：北アルプス/燕岳/1日目）
+const FOLDER_MAX_DEPTH = 3;    // 3 階層まで
 
-/** 使われているフォルダ名を集める（空のフォルダも覚えておく） */
 const FOLDER_STORE = 'gsimap.folders';
+const FOLDER_HIDE_STORE = 'gsimap.foldersHidden';
 
+/* ---------- 階層の扱い ---------- */
+
+const folderParts = path => (path || '').split(FOLDER_SEP).filter(Boolean);
+const folderDepth = path => folderParts(path).length;
+const folderName  = path => folderParts(path).slice(-1)[0] || '';
+
+/** 自分自身と、その上の階層をすべて返す（例：a/b/c → a, a/b, a/b/c） */
+function folderChain(path){
+  const parts = folderParts(path);
+  return parts.map((_, i) => parts.slice(0, i + 1).join(FOLDER_SEP));
+}
+
+/** 使われているフォルダ名を集める。上の階層も自動で作る */
 function knownFolders(){
   let extra = [];
   try { extra = JSON.parse(localStorage.getItem(FOLDER_STORE)) || []; } catch {}
@@ -5725,22 +5747,47 @@ function knownFolders(){
     ...state.saved.map(p => p.folder || ''),
     ...(istate.routeFolders || []),
   ];
-  const all = [...new Set([...extra, ...used].filter(Boolean))];
-  return all.sort((a, b) => a.localeCompare(b, 'ja'));
+  const all = new Set();
+  for (const f of [...extra, ...used]) folderChain(f).forEach(c => all.add(c));
+  return [...all].sort((a, b) => a.localeCompare(b, 'ja'));
 }
 
-function rememberFolder(name){
-  if (!name) return;
+function rememberFolder(path){
+  if (!path) return;
   const list = knownFolders();
-  if (list.includes(name)) return;
-  try { localStorage.setItem(FOLDER_STORE, JSON.stringify([...list, name])); } catch {}
+  const add = folderChain(path).filter(c => !list.includes(c));
+  if (!add.length) return;
+  try { localStorage.setItem(FOLDER_STORE, JSON.stringify([...list, ...add])); } catch {}
 }
 
-function forgetFolder(name){
+/** そのフォルダと、その下の階層をまとめて忘れる */
+function forgetFolder(path){
   try {
-    const list = (JSON.parse(localStorage.getItem(FOLDER_STORE)) || []).filter(f => f !== name);
+    const list = (JSON.parse(localStorage.getItem(FOLDER_STORE)) || [])
+      .filter(f => f !== path && !f.startsWith(path + FOLDER_SEP));
     localStorage.setItem(FOLDER_STORE, JSON.stringify(list));
   } catch {}
+}
+
+/* ---------- 表示・非表示 ---------- */
+
+function hiddenFolders(){
+  try { return new Set(JSON.parse(localStorage.getItem(FOLDER_HIDE_STORE)) || []); }
+  catch { return new Set(); }
+}
+
+/** 自分か、上の階層のどれかが非表示なら隠す */
+function folderHidden(path){
+  if (!path) return false;
+  const hid = hiddenFolders();
+  return folderChain(path).some(c => hid.has(c));
+}
+
+function toggleFolderHidden(path){
+  const hid = hiddenFolders();
+  if (hid.has(path)) hid.delete(path);
+  else hid.add(path);
+  try { localStorage.setItem(FOLDER_HIDE_STORE, JSON.stringify([...hid])); } catch {}
 }
 
 const istate = {
@@ -5748,7 +5795,7 @@ const istate = {
   target: null,         // いま編集しているもの
 };
 
-/** フォルダごとにまとめる。[{ folder, items:[...] }] を名前順で返す */
+/** フォルダごとにまとめる。[{ folder, items:[...] }] を階層の順で返す */
 function groupByFolder(items){
   const map = new Map();
   for (const it of items){
@@ -5756,7 +5803,7 @@ function groupByFolder(items){
     if (!map.has(f)) map.set(f, []);
     map.get(f).push(it);
   }
-  // 空のフォルダも見出しだけ出す（移動先として選べるように）
+  // 空のフォルダ・途中の階層も見出しだけ出す（移動先として選べるように）
   for (const f of knownFolders()) if (!map.has(f)) map.set(f, []);
 
   return [...map.entries()]
@@ -5764,14 +5811,26 @@ function groupByFolder(items){
     .map(([folder, list]) => ({ folder, items:list }));
 }
 
-/** フォルダの見出し。中身が無いフォルダは、その場で消せるようにする */
+/**
+ * フォルダの見出し。
+ * 階層に応じて字下げし、地図に出すかどうかのチェックを付ける。
+ * 中身が無いフォルダは、その場で消せる。
+ */
 function folderHead(g){
-  const name = g.folder || NO_FOLDER;
-  const empty = g.items.length === 0 && g.folder;
-  return `<div class="fold-head">
+  const path = g.folder;
+  const depth = folderDepth(path);
+  const name = path ? folderName(path) : NO_FOLDER;
+  const empty = g.items.length === 0 && path;
+  const hidden = path ? hiddenFolders().has(path) : false;
+  const dimmed = path && folderHidden(path);
+  return `<div class="fold-head${dimmed ? ' off' : ''}"
+       style="padding-left:${Math.max(0, depth - 1) * 14}px">
+    ${path ? `<label class="fold-show" title="地図に表示する">
+        <input type="checkbox" data-showfolder="${esc(path)}"${hidden ? '' : ' checked'}>
+      </label>` : '<span class="fold-spacer"></span>'}
     <svg viewBox="0 0 24 24"><path d="M10 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-2z"/></svg>
     ${esc(name)}<span class="fold-n">${g.items.length}</span>
-    ${empty ? `<button class="iconbtn small fold-del" data-delfolder="${esc(g.folder)}"
+    ${empty ? `<button class="iconbtn small fold-del" data-delfolder="${esc(path)}"
         title="この空のフォルダを消す"><svg viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg></button>` : ''}
   </div>`;
 }
@@ -5794,12 +5853,19 @@ function openItemEditor(kind, item, handlers){
   $('#itemIconWrap').classList.toggle('hidden', !isPlace);
 
   $('#itemName').value = item.title || item.name || '';
+  const label = f => '　'.repeat(Math.max(0, folderDepth(f) - 1)) + folderName(f);
   $('#itemFolder').innerHTML =
     `<option value="">${NO_FOLDER}</option>`
-    + folders.map(f => `<option value="${esc(f)}"${f === cur ? ' selected' : ''}>${esc(f)}</option>`).join('')
+    + folders.map(f => `<option value="${esc(f)}"${f === cur ? ' selected' : ''}>${esc(label(f))}</option>`).join('')
     + '<option value="__new__">＋ 新しいフォルダ…</option>';
+
+  // 新しく作るときの親フォルダ（3 階層までなので、親は 2 階層まで）
+  $('#itemFolderParent').innerHTML =
+    `<option value="">${NO_FOLDER}（いちばん上）</option>`
+    + folders.filter(f => folderDepth(f) < FOLDER_MAX_DEPTH)
+             .map(f => `<option value="${esc(f)}">${esc(label(f))} の中</option>`).join('');
   $('#itemFolderNew').value = '';
-  $('#itemFolderNew').classList.add('hidden');
+  $('#itemNewWrap').classList.add('hidden');
 
   if (isPlace){
     const sel = item.icon || PLACE_ICONS[0].id;
@@ -5832,11 +5898,23 @@ function closeItemEditor(){
 function itemFolderValue(){
   const sel = $('#itemFolder').value;
   if (sel !== '__new__') return sel;
-  return $('#itemFolderNew').value.trim();
+  const name = $('#itemFolderNew').value.trim().replace(/[/／]/g, '-');
+  if (!name) return '';
+  const parent = $('#itemFolderParent').value;
+  const path = parent ? parent + FOLDER_SEP + name : name;
+  return folderDepth(path) > FOLDER_MAX_DEPTH ? '' : path;
 }
 
 function bindItemsUI(){
   // 空フォルダの削除（一覧はその都度作り直すので、まとめて受ける）
+  document.addEventListener('change', e => {
+    const c = e.target.closest('[data-showfolder]');
+    if (!c) return;
+    toggleFolderHidden(c.dataset.showfolder);
+    renderPlacePins();
+    showSaved();
+  });
+
   document.addEventListener('click', e => {
     const b = e.target.closest('[data-delfolder]');
     if (!b) return;
@@ -5853,7 +5931,7 @@ function bindItemsUI(){
 
   $('#itemFolder').onchange = () => {
     const isNew = $('#itemFolder').value === '__new__';
-    $('#itemFolderNew').classList.toggle('hidden', !isNew);
+    $('#itemNewWrap').classList.toggle('hidden', !isNew);
     if (isNew) setTimeout(() => $('#itemFolderNew').focus(), 30);
   };
 
@@ -7164,16 +7242,36 @@ function renderSuggest(items){
   }
   box.innerHTML = items.map((it,i) => `
     <div class="sg-item" data-i="${i}">
-      <span class="sg-ic"><svg viewBox="0 0 24 24"><path d="M12 2a7 7 0 0 0-7 7c0 5.25 7 13 7 13s7-7.75 7-13a7 7 0 0 0-7-7zm0 9.5A2.5 2.5 0 1 1 12 6.5a2.5 2.5 0 0 1 0 5z"/></svg></span>
+      <span class="sg-ic"${it.saved ? ` style="background:${iconDef(it.icon).color}"` : ''}>
+        <svg viewBox="0 0 24 24"${it.saved ? ' style="fill:#fff"' : ''}><path d="${
+          it.saved ? ICON_PATH[iconDef(it.icon).id]
+                   : 'M12 2a7 7 0 0 0-7 7c0 5.25 7 13 7 13s7-7.75 7-13a7 7 0 0 0-7-7zm0 9.5A2.5 2.5 0 1 1 12 6.5a2.5 2.5 0 0 1 0 5z'}"/></svg></span>
       <span class="sg-txt">
         <span class="sg-title">${esc(it.title)}</span><br>
-        <span class="sg-sub">${fmtLL(it.lng, it.lat)}</span>
+        <span class="sg-sub">${it.saved
+          ? '保存した地点' + (it.folder ? `　${esc(it.folder)}` : '')
+          : fmtLL(it.lng, it.lat)}</span>
       </span>
     </div>`).join('');
   box.classList.remove('hidden');
 }
 
 function hideSuggest(){ $('#suggest').classList.add('hidden'); sgSel = -1; }
+
+/** 保存した地点を名前で探す（検索欄の候補に出す） */
+function searchSavedPlaces(q){
+  const k = q.trim().toLowerCase();
+  if (!k) return [];
+  return state.saved
+    .map((p, i) => ({ ...p, _i:i }))
+    .filter(p => (p.title || '').toLowerCase().includes(k))
+    .sort((a, b) => {
+      const ta = (a.title || '').toLowerCase(), tb = (b.title || '').toLowerCase();
+      return (ta.startsWith(k) ? 0 : 1) - (tb.startsWith(k) ? 0 : 1)
+          || ta.length - tb.length;
+    })
+    .slice(0, 5);
+}
 
 async function runSuggest(q){
   // Google マップ・ストリートビューの URL を貼り付けたときも地点として扱う
@@ -7187,9 +7285,12 @@ async function runSuggest(q){
     renderSuggest([{ title:`緯度経度 ${fmtLL(ll.lng, ll.lat)}`, lng:ll.lng, lat:ll.lat }]);
     return;
   }
+  // 保存した地点を先に出す（自分で付けた名前で呼び出せるように）
+  const mine = searchSavedPlaces(q).map(p => ({ ...p, saved:true }));
   try {
-    renderSuggest((await gsiSearch(q)).slice(0, 8));
+    renderSuggest([...mine, ...(await gsiSearch(q)).slice(0, 8 - mine.length)]);
   } catch (e){
+    if (mine.length){ renderSuggest(mine); return; }
     $('#suggest').innerHTML = `<div class="sg-empty">${esc(e.message)}</div>`;
     $('#suggest').classList.remove('hidden');
   }
@@ -7216,6 +7317,11 @@ async function submitSearch(){
   }
   const ll = parseLatLng(q);
   if (ll){ goToPlace({ lng:ll.lng, lat:ll.lat, title:`緯度経度 ${fmtLL(ll.lng, ll.lat)}` }); return; }
+
+  // 保存した地点に同じ名前があれば、そちらへ
+  const mine = searchSavedPlaces(q);
+  const exact = mine.find(p => (p.title || '').toLowerCase() === q.toLowerCase());
+  if (exact || mine.length === 1){ goToPlace(exact || mine[0]); return; }
 
   let results;
   try { results = await gsiSearch(q); }
@@ -7575,6 +7681,7 @@ function renderPlacePins(){
   if (!placePinsEnabled()) return;
 
   state.saved.forEach((p, i) => {
+    if (folderHidden(p.folder)) return;       // 非表示にしたフォルダの地点は出さない
     const def = iconDef(p.icon);
     const el = document.createElement('div');
     el.className = 'savedpin';

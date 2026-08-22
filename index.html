@@ -452,6 +452,34 @@ transition:transform .25s ease-out, background .2s;
 .trackbar.offroute .navarrow{background:#fce8e6;}
 .trackbar.offroute .navarrow svg{fill:#d93025;}
 .tk-btns{display:flex;align-items:center;gap:6px;margin-top:8px;}
+.tk-maneuver{
+display:flex;align-items:baseline;gap:8px;
+padding:0 0 8px;margin-bottom:8px;border-bottom:1px solid var(--line);
+}
+.tk-maneuver.hidden{display:none;}
+.mv-dist{font-size:20px;font-weight:500;color:var(--blue);white-space:nowrap;
+font-variant-numeric:tabular-nums;}
+.mv-text{font-size:13px;line-height:1.4;min-width:0;
+display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}
+.tk-toggle{
+position:absolute;top:4px;right:6px;z-index:2;
+width:26px;height:26px;padding:0;border:0;border-radius:50%;
+background:transparent;color:var(--text-sub);cursor:pointer;
+display:flex;align-items:center;justify-content:center;
+}
+.tk-toggle:hover{background:#f1f3f4;}
+.tk-toggle svg{width:20px;height:20px;fill:currentColor;transition:transform .2s;}
+.trackbar.min .tk-toggle svg{transform:rotate(180deg);}
+.trackbar.min{padding:6px 10px;}
+.trackbar.min .tk-sub,
+.trackbar.min .tk-btns,
+.trackbar.min .tk-cell:not(.dir-cell):not(.keep){display:none;}
+.trackbar.min .tk-maneuver{padding-bottom:0;margin-bottom:0;border-bottom:0;}
+.trackbar.min .tk-stats{gap:8px;margin-top:4px;}
+.trackbar.min .navarrow{width:26px;height:26px;}
+.trackbar.min .navarrow svg{width:17px;height:17px;}
+.trackbar.min .tk-cell .tv{font-size:15px;}
+.trackbar.min .tk-cell .tk{display:none;}
 .mylocation .dir{
 position:absolute;left:50%;top:-2px;width:0;height:0;display:none;
 border-left:9px solid transparent;border-right:9px solid transparent;
@@ -796,10 +824,20 @@ left:calc(8px + env(safe-area-inset-left));
 right:calc(8px + env(safe-area-inset-right));
 bottom:calc(12px + env(safe-area-inset-bottom));
 }
+.trackbar{padding:7px 10px;}
 .tk-stats{gap:6px;}
 .tk-cell .tv{font-size:15px;}
+.tk-cell .tk{font-size:9px;}
+.tk-sub{font-size:10px;margin-top:4px;}
+.tk-btns{margin-top:6px;}
+.tk-maneuver{padding-bottom:6px;margin-bottom:6px;gap:6px;}
+.mv-dist{font-size:17px;}
+.mv-text{font-size:12px;-webkit-line-clamp:1;}
+.navarrow{width:28px;height:28px;}
+.navarrow svg{width:18px;height:18px;}
 body.track-open .layerarea{display:none;}
 body.track-open .rightctrl{bottom:calc(150px + env(safe-area-inset-bottom));}
+body.track-min .rightctrl{bottom:calc(96px + env(safe-area-inset-bottom));}
 .routebar{
 min-width:0;transform:none;
 left:calc(8px + env(safe-area-inset-left));
@@ -903,8 +941,11 @@ body.sv-open .panel,body.sv-open .paneltab{display:none;}
     <div class="dirrow">
       <span class="dot origin"></span>
       <input id="fromInput" type="text" placeholder="出発地を入力 / 地図を右クリック">
-      <button class="iconbtn small" id="fromHere" title="現在地">
+      <button class="iconbtn small" id="fromHere" title="現在地にする">
         <svg viewBox="0 0 24 24"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zm8.94 3A8.994 8.994 0 0 0 13 3.06V1h-2v2.06A8.994 8.994 0 0 0 3.06 11H1v2h2.06A8.994 8.994 0 0 0 11 20.94V23h2v-2.06A8.994 8.994 0 0 0 20.94 13H23v-2h-2.06zM12 19a7 7 0 1 1 0-14 7 7 0 0 1 0 14z"/></svg>
+      </button>
+      <button class="iconbtn small" id="fromPick" title="地図をタップして出発地を選ぶ">
+        <svg viewBox="0 0 24 24"><path d="M12 2a7 7 0 0 0-7 7c0 5.25 7 13 7 13s7-7.75 7-13a7 7 0 0 0-7-7zm0 9.5A2.5 2.5 0 1 1 12 6.5a2.5 2.5 0 0 1 0 5z"/></svg>
       </button>
     </div>
     <div class="dirrow">
@@ -1031,6 +1072,14 @@ body.sv-open .panel,body.sv-open .paneltab{display:none;}
 
 <!-- ============ 軌跡の記録・ナビ ============ -->
 <div id="trackBar" class="card trackbar hidden">
+  <button id="tkToggle" class="tk-toggle" title="表示を小さくする" aria-label="表示の切り替え">
+    <svg viewBox="0 0 24 24"><path d="M7.41 8.59 12 13.17l4.59-4.58L18 10l-6 6-6-6z"/></svg>
+  </button>
+  <!-- 道路を走るときの案内（○ m 先 右折）。経路検索から始めたときだけ出る -->
+  <div id="tkManeuver" class="tk-maneuver hidden">
+    <span class="mv-dist" id="tkMvDist">—</span>
+    <span class="mv-text" id="tkMvText"></span>
+  </div>
   <div class="tk-stats">
     <div class="tk-cell dir-cell">
       <div class="navarrow" id="tkArrow">
@@ -1038,9 +1087,9 @@ body.sv-open .panel,body.sv-open .paneltab{display:none;}
       </div>
       <div class="tk" id="tkDirLabel">測位中…</div>
     </div>
-    <div class="tk-cell"><div class="tv" id="tkRemain">—</div><div class="tk">残り距離</div></div>
+    <div class="tk-cell keep"><div class="tv" id="tkRemain">—</div><div class="tk">残り距離</div></div>
     <div class="tk-cell"><div class="tv" id="tkEta">—</div><div class="tk">残り時間</div></div>
-    <div class="tk-cell"><div class="tv" id="tkArrive">—</div><div class="tk">到着予定</div></div>
+    <div class="tk-cell keep"><div class="tv" id="tkArrive">—</div><div class="tk">到着予定</div></div>
   </div>
   <div class="tk-sub">
     ルートまで <b id="tkOff">—</b>　標高 <b id="tkEle">—</b>　<span id="tkAcc">測位中…</span>
@@ -1049,6 +1098,10 @@ body.sv-open .panel,body.sv-open .paneltab{display:none;}
     <button id="tkHeadUp" class="chipbtn" title="向いている方向を上にする">
       <svg viewBox="0 0 24 24"><path d="M12 2 4.5 20.29l.71.71L12 18l6.79 3 .71-.71z"/></svg>
       向きに合わせる
+    </button>
+    <button id="tkPause" class="chipbtn" title="一時停止するとルートを編集できます">
+      <svg viewBox="0 0 24 24"><path d="M6 5h4v14H6zm8 0h4v14h-4z"/></svg>
+      一時停止
     </button>
     <button id="tkReroute" class="chipbtn" title="ルートを外れたら自動で再検索する">
       <svg viewBox="0 0 24 24"><path d="M17.65 6.35A8 8 0 1 0 19.73 14h-2.08A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4z"/></svg>
@@ -2389,6 +2442,10 @@ function routeAddPoint(lngLat){
 /** app.js の click ハンドラから呼ばれる。処理したら true */
 function routeHandleClick(lngLat, point){
   if (!rstate.active) return false;
+  if (editLocked()){
+    // ナビ中はゴールが動かないようにする。線の距離表示だけは見られてよい
+    return point ? probeDistance(point) : false;
+  }
   if (rstate.mode === 'erase') return true;        // 消しゴム中は mousedown 側で処理
 
   // 線の上をクリックしたら、その地点の距離を表示する
@@ -2441,8 +2498,13 @@ async function snapAddPoint(lngLat){
 
 /* ---------- 描画（フリーハンド） ---------- */
 
+/** ナビ中はルートを編集しない（地図の操作でゴールが動くのを防ぐ） */
+function editLocked(){
+  return typeof nav !== 'undefined' && nav.active && !nav.paused;
+}
+
 function onDrawStart(e){
-  if (!rstate.active) return;
+  if (!rstate.active || editLocked()) return;
   if (pan.on || pan.space) return;                  // 地図を動かしている最中
   const btn = e.originalEvent && e.originalEvent.button;
   if (btn != null && btn !== 0) return;             // 左ボタン以外は無視
@@ -2467,6 +2529,7 @@ function onDrawStart(e){
 }
 
 function onDrawMove(e){
+  if (editLocked()) return;
   if (rstate.mode === 'erase' && rstate.active) moveEraserCursor(e.point);
   if (rstate.erasing){ eraseStroke(e.point); return; }
   if (!rstate.drawing) return;
@@ -4484,12 +4547,16 @@ const nav = {
   progress:null,      // ルートの始点から、いまどこまで進んだか（m）
   maxProgress:0,      // いちばん進んだところ。到着判定に使う
   lastPos:null,       // 前回の測位。進める距離の上限を決めるのに使う
+  steps:null,         // 道路の案内（○ m 先 右折）。経路検索から始めたときだけ入る
+  paused:false,       // 一時停止中。ルートを編集できる
+  wakeLock:null,      // 画面を消さないための保持
 };
 
 const OFF_ROUTE_M = 50;        // これ以上ルートから離れたら警告する
+const REROUTE_OFF_M = 10;      // 道路のナビでは、これだけ外れたら引き直す
 const TARGET_AHEAD_M = 30;     // この距離だけ先を「進む方向」の目標にする
-const REROUTE_HITS = 3;        // 続けてこの回数ルートを外れたら再検索する
-const REROUTE_INTERVAL = 15000;// 再検索の間隔（ミリ秒）
+const REROUTE_HITS = 2;        // 続けてこの回数外れたら再検索する
+const REROUTE_INTERVAL = 8000; // 再検索の間隔（ミリ秒）
 const NAV_WINDOW_M = 300;      // ルート上の現在位置を、前回位置からこの距離だけ先まで探す
 const NAV_BACK_M = 60;         // 後戻りとして認める範囲（測位のふらつき用）
 const ARRIVE_M = 30;           // ゴールまでこの距離になったら到着とみなす
@@ -4942,6 +5009,8 @@ function updateNavigation(){
   $('#tkEta').textContent = sec != null ? fmtDur(sec) : '—';
   $('#tkArrive').textContent = sec != null ? fmtClock(new Date(Date.now() + sec * 1000)) : '—';
   updateNavArrow();
+  updateManeuver();
+  if (nav.paused) return;              // 一時停止中は警告や再検索をしない
 
   const off = d.off > OFF_ROUTE_M;
   $('#trackBar').classList.toggle('offroute', off);
@@ -4951,8 +5020,9 @@ function updateNavigation(){
   }
   nav.offRoute = off;
 
-  // 自動リルート：続けて外れたら、いまの位置から目的地まで引き直す
-  if (off) nav.offCount++;
+  // 自動リルート：道路を走っているときは、わずかに外れた時点で引き直す。
+  // 測位のふらつきで暴発しないよう、続けて外れたときだけにする
+  if (d.off > REROUTE_OFF_M) nav.offCount++;
   else nav.offCount = 0;
   if (nav.autoReroute && nav.offCount >= REROUTE_HITS
       && Date.now() - nav.lastReroute > REROUTE_INTERVAL) reroute();
@@ -4998,6 +5068,87 @@ async function reroute(){
   } finally {
     nav.rerouting = false;
   }
+}
+
+/* ---------- 道路の案内（○ m 先 右折） ---------- */
+
+/** いまの位置から見て、次に曲がる地点 */
+function nextManeuver(){
+  if (!nav.steps || !nav.steps.length || nav.progress == null) return null;
+  for (const s of nav.steps){
+    // 少し行き過ぎた案内は飛ばす（曲がり終えた直後に残らないように）
+    if (s.at - nav.progress > 5) return { ...s, ahead: s.at - nav.progress };
+  }
+  return null;
+}
+
+function updateManeuver(){
+  const box = $('#tkManeuver');
+  if (!box) return;
+  const m = nextManeuver();
+  if (!m){ box.classList.add('hidden'); return; }
+  box.classList.remove('hidden');
+  $('#tkMvDist').textContent = `${fmtDist(m.ahead)}先`;
+  $('#tkMvText').textContent = m.text || '';
+}
+
+/* ---------- 画面を消さない ---------- */
+
+async function keepScreenOn(on){
+  if (!('wakeLock' in navigator)) return;
+  try {
+    if (on){
+      if (nav.wakeLock) return;
+      nav.wakeLock = await navigator.wakeLock.request('screen');
+      nav.wakeLock.addEventListener('release', () => { nav.wakeLock = null; });
+    } else if (nav.wakeLock){
+      await nav.wakeLock.release();
+      nav.wakeLock = null;
+    }
+  } catch { /* 電池残量が少ないときなどは取得できない */ }
+}
+
+/* ---------- 一時停止（ルートを編集できるようにする） ---------- */
+
+/**
+ * ナビ中は地図をタップしてもルートが変わらないようにしてある。
+ * ゴールを変えたいときは、いったん一時停止してから編集する。
+ */
+function toggleNavPause(){
+  nav.paused = !nav.paused;
+  const bar = $('#trackBar');
+  bar.classList.toggle('paused', nav.paused);
+  const btn = $('#tkPause');
+  if (btn){
+    btn.classList.toggle('on', nav.paused);
+    btn.lastChild.textContent = nav.paused ? '再開' : '一時停止';
+    btn.title = nav.paused ? 'ナビを再開します' : '一時停止するとルートを編集できます';
+  }
+
+  if (nav.paused){
+    // ルート作成バーを出して、編集できる状態に戻す
+    $('#routeBar').classList.remove('hidden');
+    document.body.classList.add('route-open');
+    applyDrawInteraction();
+    keepScreenOn(false);
+    toast('一時停止しました。ルートを編集できます。'
+        + '編集が終わったら「再開」を押してください', 6000);
+  } else {
+    $('#routeBar').classList.add('hidden');
+    document.body.classList.remove('route-open');
+    map.dragPan.enable();
+    map.getCanvas().style.cursor = '';
+    $('#eraserCursor').classList.add('hidden');
+    // 編集後のルートに合わせて、進み具合を測り直す
+    nav.progress = navStartProgress();
+    nav.maxProgress = nav.progress;
+    nav.lastPos = null;
+    nav.arrived = false;
+    keepScreenOn(true);
+    updateNavigation();
+    toast('ナビを再開しました');
+  }
+  updateTrackBar();
 }
 
 function toggleAutoReroute(){
@@ -5047,6 +5198,15 @@ async function startNavigation(){
   const info = rstate.fromSearch ? rstate.searchInfo : null;
   nav.avgSpeed = info && info.duration > 0 ? info.distance / info.duration : null;
   nav.autoReroute = !!rstate.fromSearch;
+  nav.steps = (info && info.steps && info.steps.length) ? info.steps : null;
+  nav.paused = false;
+
+  // ナビ中は地図をタップしてもルートが変わらないようにする
+  // （地図を動かそうとしてゴールが動いてしまうのを防ぐ）
+  map.dragPan.enable();
+  map.getCanvas().style.cursor = '';
+  $('#eraserCursor').classList.add('hidden');
+  keepScreenOn(true);                    // 画面を消さない
   // ナビ中はルート作成バーを隠す（画面下がバーで埋まってしまうため）
   nav.routeBarWasOpen = !$('#routeBar').classList.contains('hidden');
   $('#routeBar').classList.add('hidden');
@@ -5070,6 +5230,12 @@ function endNavigation(){
   nav.progress = null;
   nav.maxProgress = 0;
   nav.lastPos = null;
+  nav.steps = null;
+  nav.paused = false;
+  keepScreenOn(false);
+  $('#trackBar').classList.remove('paused', 'min');
+  document.body.classList.remove('track-min');
+  $('#tkManeuver').classList.add('hidden');
   document.body.classList.remove('nav-on', 'track-open');
   $('#trackBar').classList.remove('nav', 'offroute');
   $('#trackBar').classList.add('hidden');
@@ -5130,7 +5296,19 @@ function bindTrackUI(){
   $('#geoBtn').onclick   = toggleFollow;
   $('#tkHeadUp').onclick  = toggleHeadingUp;
   $('#tkReroute').onclick = toggleAutoReroute;
+  $('#tkPause').onclick   = toggleNavPause;
   $('#tkStop').onclick    = endNavigation;
+  $('#tkToggle').onclick  = () => {
+    const min = $('#trackBar').classList.toggle('min');
+    document.body.classList.toggle('track-min', min);
+    $('#tkToggle').title = min ? '表示を大きくする' : '表示を小さくする';
+    syncPanelTab && syncPanelTab();
+  };
+
+  // 画面を消していた間に解除された場合、戻ってきたら取り直す
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && nav.active && !nav.paused) keepScreenOn(true);
+  });
   // 地図を回したときもマーカーの向きを合わせる
   // 地図を回したときも、マーカーの向きを描き直す
   map.on('rotate', () => { if (cstate.heading != null) startAnimation(); });
@@ -5861,6 +6039,10 @@ const tileUrl = l => l.url || `${GSI_TILE}/${l.id}/{z}/{x}/{y}.${l.ext}`;
 // 実際のタイルを調べて確認した値（2701 は車道の中心線、2721 が徒歩道）
 const GSI_TRAIL_FTCODE = 2721;
 
+// 作成したルートの線の色。地理院地図の道路（赤・橙系）と見分けやすい黄緑にする
+const ROUTE_COLOR = '#c6ff00';   // 本線
+const ROUTE_EDGE  = '#1b5e20';   // 縁取り（明るい地図でも沈まないように濃い緑）
+
 const DEFAULT_VIEW = { center:[139.767125, 35.681236], zoom:14, bearing:0, pitch:0 }; // 東京駅
 
 /* ---------- 小物ユーティリティ ---------- */
@@ -5923,7 +6105,8 @@ const state = {
   placeMarkers: [],         // 保存した地点の常時表示ピン
   place: null,              // { lng, lat, title, address }
   searchMarkers: [],
-  route: { from:null, to:null, profile:'driving', line:null },   // line = 検索で出た経路の座標列
+  route: { from:null, to:null, profile:'driving', line:null },
+  pickEnd: null,        // 'from' のとき、地図のタップで出発地を決める   // line = 検索で出た経路の座標列
   myLocation: null,
   saved: loadSaved(),
 };
@@ -5996,12 +6179,13 @@ function buildStyle(){
     { id:'route-line', type:'line', source:'route',
       layout:{ 'line-cap':'round', 'line-join':'round' },
       paint:{ 'line-color':'#4285f4', 'line-width':['interpolate',['linear'],['zoom'],10,3.5,16,7.5] } },
+    // 作成したルート。地理院地図は道路が赤系なので、黄緑＋濃い縁取りで見分ける
     { id:'draw-casing', type:'line', source:'draw',
       layout:{ 'line-cap':'round', 'line-join':'round' },
-      paint:{ 'line-color':'#ffffff', 'line-width':7, 'line-opacity':0.9 } },
+      paint:{ 'line-color':ROUTE_EDGE, 'line-width':8, 'line-opacity':0.85 } },
     { id:'draw-line', type:'line', source:'draw',
       layout:{ 'line-cap':'round', 'line-join':'round' },
-      paint:{ 'line-color':'#d93025', 'line-width':4 } }
+      paint:{ 'line-color':ROUTE_COLOR, 'line-width':4.5 } }
   );
 
   return { version:8, sources, layers };
@@ -6940,7 +7124,30 @@ function openDirections(){
   p.scrollTop = 0;
   $('#panelTab').classList.remove('hidden');
   setPanelCollapsed(false);
+  // 出発地はふつう現在地なので、空なら自動で入れておく
+  if (!state.route.from && !$('#fromInput').value.trim()) useCurrentAsOrigin();
 }
+
+/**
+ * 地図をタップして出発地を選ぶモード。
+ * スマホでは右クリックが使えないため、ボタンから入れるようにしている。
+ */
+function setEndPick(which){
+  state.pickEnd = (state.pickEnd === which) ? null : which;
+  $('#fromPick').classList.toggle('on', state.pickEnd === 'from');
+  map.getCanvas().style.cursor = state.pickEnd ? 'crosshair' : '';
+  if (state.pickEnd) toast('地図をタップして出発地を選んでください', 5000);
+}
+
+/** 地図がタップされたとき。選択モードなら処理して true を返す */
+function pickEndFromMap(lngLat){
+  if (!state.pickEnd) return false;
+  const which = state.pickEnd;
+  setEndPick(null);
+  setRouteEnd(which, { lng:lngLat.lng, lat:lngLat.lat, title:'指定した地点' });
+  return true;
+}
+
 function closeDirections(){
   document.body.classList.remove('dir-open', 'dir-searched');
   $('#dirCard').classList.add('hidden');
@@ -7045,15 +7252,28 @@ async function valhallaRoute(from, to, opt){
     throw new Error((j && (j.error || j.error_code)) || '経路が見つかりませんでした');
 
   const leg = j.trip.legs[0], sum = j.trip.summary;
+  const coords = decodePolyline(leg.shape, 6);
+
+  // 各案内が「出発点から何 m の地点か」を求めておく。
+  // ナビ中に「○ m 先 右折」と出すために使う
+  const at = [0];
+  for (let i = 1; i < coords.length; i++) at[i] = at[i-1] + haversine(coords[i-1], coords[i]);
+
   return {
     engine: 'valhalla',
-    coords: decodePolyline(leg.shape, 6),
+    coords,
     distance: sum.length * 1000,          // km で返るので m に直す
     duration: sum.time,
     hasToll: !!sum.has_toll,
     hasHighway: !!sum.has_highway,
     hasFerry: !!sum.has_ferry,
-    steps: (leg.maneuvers || []).map(m => ({ text: m.instruction, distance: m.length * 1000 })),
+    steps: (leg.maneuvers || []).map(m => ({
+      text: m.instruction,
+      short: m.verbal_transition_alert_instruction || m.verbal_pre_transition_instruction || m.instruction,
+      distance: m.length * 1000,          // その案内の区間の長さ
+      at: at[Math.min(m.begin_shape_index || 0, at.length - 1)],   // 出発点からの距離
+      type: m.type,
+    })),
   };
 }
 
@@ -7192,17 +7412,6 @@ function showRoutePanel(from, to, route, warn){
         </div>
       </div>
       ${routeBadges(route)}
-      ${route.optionsIgnored ? `<div class="p-empty">
-        経路探索サーバに接続できなかったため、有料道路・高速道路の条件は反映されていません。</div>` : ''}
-      ${warn ? `<div class="p-empty">${warn}</div>` : ''}
-      ${straight ? '' : `<div class="p-sec-title">ルート案内</div>
-        <ul class="p-steps">
-          ${steps.map(s => `
-            <li>
-              <span class="st-ic"><svg viewBox="0 0 24 24"><path d="M12 4 6 10l1.4 1.4L11 7.8V20h2V7.8l3.6 3.6L18 10z"/></svg></span>
-              <span>${esc(s.text)}<div class="st-d">${fmtDist(s.distance)}</div></span>
-            </li>`).join('')}
-        </ul>`}
       <div class="p-actions" style="border-bottom:0">
         <button class="p-act" id="rtNav">
           <span class="circ"><svg viewBox="0 0 24 24"><path d="M12 2 4.5 20.29l.71.71L12 18l6.79 3 .71-.71z"/></svg></span>
@@ -7217,6 +7426,17 @@ function showRoutePanel(from, to, route, warn){
           GPX
         </button>
       </div>
+      ${route.optionsIgnored ? `<div class="p-empty">
+        経路探索サーバに接続できなかったため、有料道路・高速道路の条件は反映されていません。</div>` : ''}
+      ${warn ? `<div class="p-empty">${warn}</div>` : ''}
+      ${straight ? '' : `<div class="p-sec-title">ルート案内</div>
+        <ul class="p-steps">
+          ${steps.map(s => `
+            <li>
+              <span class="st-ic"><svg viewBox="0 0 24 24"><path d="M12 4 6 10l1.4 1.4L11 7.8V20h2V7.8l3.6 3.6L18 10z"/></svg></span>
+              <span>${esc(s.text)}<div class="st-d">${fmtDist(s.distance)}</div></span>
+            </li>`).join('')}
+        </ul>`}
       <div class="p-empty">
         「ナビ開始」「高低差」「GPX」を押すと、この経路を作成中のルートとして取り込みます。
         取り込んだ後は、なぞって書き足したり、名前を付けて保存したりできます。<br>
@@ -7245,7 +7465,7 @@ function useSearchedRoute(then){
   const label = `${(state.route.from && state.route.from.title) || '出発地'}`
               + ` → ${(state.route.to && state.route.to.title) || '目的地'}`;
   loadRoutePaths([line.map(c => [c[0], c[1]])], label);
-  // 検索から取り込んだ印。ナビの所要時間と自動リルートに使う
+  // 検索から取り込んだ印。ナビの所要時間・案内・自動リルートに使う
   rstate.fromSearch = true;
   rstate.searchInfo = state.route.info || null;
   rstate.searchTo = state.route.to || null;
@@ -7388,6 +7608,7 @@ function bindUI(){
     if (state.route.from && state.route.to) requestRoute();
   };
   $('#fromHere').onclick = useCurrentAsOrigin;
+  $('#fromPick').onclick = () => setEndPick('from');
   /* 有料道路・高速道路を使うかどうか。設定は次回も引き継ぐ */
   const opt = routeOptions();
   $('#optNoToll').checked = !!opt.noToll;
@@ -7632,6 +7853,7 @@ function bindMapEvents(){
       openStreetView([e.lngLat.lng, e.lngLat.lat]);
       return;
     }
+    if (pickEndFromMap(e.lngLat)) return;              // 出発地を地図から選ぶ
     if (routeHandleClick(e.lngLat, e.point)) return;   // ルート作成中
     if (osmHandleClick(e.lngLat, e.point)) return;     // OSM の登山道をクリック
     const place = { lng:e.lngLat.lng, lat:e.lngLat.lat, title:'選択した地点' };

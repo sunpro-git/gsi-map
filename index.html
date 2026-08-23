@@ -213,7 +213,8 @@ display:flex;align-items:center;justify-content:center;
 .p-act{
 display:flex;flex-direction:column;align-items:center;gap:6px;
 border:0;background:transparent;cursor:pointer;font-family:inherit;
-font-size:11px;line-height:1.25;color:var(--blue);width:62px;
+font-size:11px;line-height:1.25;color:var(--blue);
+flex:0 0 auto;width:62px;
 }
 .p-act .circ{
 width:40px;height:40px;border-radius:50%;
@@ -256,6 +257,21 @@ width:100%;margin-top:4px;height:34px;border:1px solid var(--line);border-radius
 padding:0 8px;font-size:13px;font-family:inherit;background:#fff;color:var(--text);
 }
 .dl-btns{display:flex;gap:6px;margin:8px 0 4px;}
+.seg{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;margin:2px 0 10px;}
+.seg button{
+flex:1 1 0;height:34px;border:0;border-left:1px solid var(--line);
+background:#fff;color:var(--text);font-size:13px;font-family:inherit;cursor:pointer;
+}
+.seg button:first-child{border-left:0;}
+.seg button.on{background:var(--accent,#1a73e8);color:#fff;}
+.dl-quote{margin:2px 0 6px;}
+.dq-main{font-size:15px;color:var(--text);}
+.dq-sub{font-size:12px;color:var(--text-sub);margin-top:2px;}
+.dq-warn{font-size:12px;color:#c5221f;margin-top:4px;}
+.dl-legend{padding:0 4px;border-radius:4px;}
+.dl-legend.sel{color:#1a73e8;background:rgba(26,115,232,.12);}
+.dl-legend.done{color:#188038;background:rgba(24,128,56,.12);}
+.dl-areas .li-sub{font-size:11px;}
 body.is-offline .searchbox::after{
 content:"オフライン";
 position:absolute;left:50%;transform:translateX(-50%);bottom:-22px;
@@ -811,8 +827,8 @@ padding-bottom:env(safe-area-inset-bottom);
 .panel .p-hero{display:none;}
 .panel .p-title{font-size:18px;margin-bottom:2px;}
 .panel .p-sub{font-size:12px;margin-bottom:10px;}
-.panel .p-actions{gap:3px;padding:0 0 8px;}
-.panel .p-act{width:62px;font-size:10px;gap:4px;}
+.panel .p-actions{gap:4px;padding:0 0 8px;}
+.panel .p-act{width:54px;font-size:10px;gap:4px;}
 .panel #rowSvExt,.panel #rowMapExt{display:none;}
 .panel .p-row.half{
 display:inline-flex;width:calc(50% - 3px);vertical-align:top;gap:8px;
@@ -981,6 +997,12 @@ box-shadow:0 8px 20px rgba(60,64,67,.35);
 transform:scale(1.03);opacity:.95;
 }
 .dragging{opacity:.35;}
+.navmodes{display:inline-flex;gap:4px;margin-left:6px;}
+.navmode{
+border:1px solid var(--line);background:#fff;color:var(--text-sub);
+border-radius:10px;padding:1px 8px;font-size:11px;font-family:inherit;cursor:pointer;
+}
+.navmode:hover{background:#f1f3f4;color:var(--text);}
 </style>
 </head>
 <body>
@@ -1694,6 +1716,19 @@ function googleMapsUrl(lngLat){
 }
 
 /**
+ * 現在地から指定地点まで、Google マップのナビを始める URL（キー不要・無料）。
+ * 出発地を書かないと Google 側が現在地を使う。
+ * dir_action=navigate を付けると、スマホのアプリでは案内がそのまま始まる。
+ *
+ * @param mode 'driving'（車）／'walking'（徒歩）／'bicycling'（自転車）
+ */
+function googleNavUrl(lngLat, mode = 'driving'){
+  return 'https://www.google.com/maps/dir/?api=1'
+       + `&destination=${lngLat[1].toFixed(7)},${lngLat[0].toFixed(7)}`
+       + `&travelmode=${mode}&dir_action=navigate`;
+}
+
+/**
  * Google マップなど外部サイトを開く。
  * スマホでは新しいタブを作らず同じタブで移動する。
  * 新しいタブだと、アプリから戻ったときに空白のタブに残されて元の画面に戻れないため。
@@ -1722,6 +1757,12 @@ function openGoogleMaps(lngLat){
     ? 'Google マップを開きました。位置を決めたら右クリック →「座標をコピー」して戻ると、自動でピンが移動します'
     : 'Google マップを開きました。位置を決め直した場合は、その地点を右クリック →「座標をコピー」してから戻ってきてください',
     7000);
+}
+
+/** 現在地から指定地点まで、Google マップでナビを始める */
+function openGoogleNav(lngLat, mode = 'driving'){
+  openExternal(googleNavUrl(lngLat, mode));
+  toast('Google マップでナビを開きます');
 }
 
 /**
@@ -5463,7 +5504,8 @@ function updateNavigation(){
 
   const off = d.off > OFF_ROUTE_M;
   $('#trackBar').classList.toggle('offroute', off);
-  showTrackNote(off ? `ルートから ${Math.round(d.off)} m 外れています` : '', off);
+  showTrackNote(nav.rerouting ? 'ルートを引き直しています…'
+              : off ? `ルートから ${Math.round(d.off)} m 外れています` : '', off);
   if (off && Date.now() - nav.lastWarn > 30000){
     nav.lastWarn = Date.now();
     toast(`ルートから ${Math.round(d.off)} m 離れています`, 5000);
@@ -5487,19 +5529,24 @@ function updateNavigation(){
   }
 }
 
-/** いまの位置から目的地までの経路を引き直す */
+/**
+ * いまの位置から目的地までの経路を引き直す。
+ *
+ * 運転中に何度もお知らせを出すと邪魔になるので、成功したときは黙って
+ * ルートだけ差し替える。状況はナビバーの下の一行に出す。
+ */
 async function reroute(){
   if (nav.rerouting || !nav.dest || !tstate.lastFix) return;
   if (!navigator.onLine){
     if (!nav.toldOffline){
       nav.toldOffline = true;
-      toast('オフラインのため、ルートの再検索はできません', 6000);
+      showTrackNote('オフラインのため、ルートを引き直せません', true);
     }
     return;
   }
   nav.rerouting = true;
   nav.lastReroute = Date.now();
-  toast('ルートを外れたため、再検索しています…', 4000);
+  showTrackNote('ルートを引き直しています…');
   try {
     const r = await routeBetween({ lng:tstate.lastFix.lng, lat:tstate.lastFix.lat }, nav.dest);
     if (!nav.active) return;                       // 待っている間にナビが終わっていたら何もしない
@@ -5511,10 +5558,11 @@ async function reroute(){
     nav.progress = 0;             // 引き直したルートは、いまの位置が始点
     nav.maxProgress = 0;
     nav.lastPos = null;
-    toast(`ルートを再検索しました（${fmtDist(r.distance)}・${fmtDur(r.duration)}）`, 5000);
+    nav.rerouting = false;
+    showTrackNote('');            // お知らせは出さず、そのまま案内を続ける
     updateNavigation();
-  } catch (e){
-    toast('ルートの再検索に失敗しました：' + e.message, 5000);
+  } catch {
+    showTrackNote('ルートを引き直せませんでした', true);
   } finally {
     nav.rerouting = false;
   }
@@ -7020,7 +7068,7 @@ const TILE_CACHE_NAME = 'gsimap-tiles-v2';   // sw.js の VERSION と合わせ�
 const MAX_DOWNLOAD_TILES = 4000;          // 一度にダウンロードする上限
 const BYTES_PER_TILE = { png:22 * 1024, jpg:48 * 1024 };
 
-const ostate = { sw:null, busy:false, cancel:false };
+const ostate = { sw:null, busy:false, cancel:false, onMove:null };
 
 /* ---------- Service Worker ---------- */
 
@@ -7079,34 +7127,145 @@ async function registerServiceWorker(){
   }
 }
 
-/* ---------- タイルの URL を組み立てる ---------- */
+/* ---------- ダウンロードする範囲を、地図の上で見せる ---------- */
 
-/** 現在の表示範囲を、指定ズームのタイル座標の範囲に変換する */
-function tileRangeForBounds(bounds, z){
-  const nw = deg2tile(bounds.getWest(), bounds.getNorth(), z);
-  const se = deg2tile(bounds.getEast(), bounds.getSouth(), z);
-  return { x0:Math.min(nw.x, se.x), x1:Math.max(nw.x, se.x),
-           y0:Math.min(nw.y, se.y), y1:Math.max(nw.y, se.y) };
+const DL_AREAS_STORE = 'gsimap.dlAreas';
+const DL_SCALES = [
+  { v:0.6, label:'せまく' },
+  { v:1.0, label:'見えている分' },
+  { v:1.8, label:'ひろく' },
+];
+
+const dlsel = { open:false, scale:1.0, span:2 };
+
+/**
+ * わくを描く画面上の四角。
+ * パネルに隠れている部分は避け、少し内側に入れて、わくが必ず見えるようにする。
+ */
+function dlViewRect(){
+  const c = map.getCanvas();
+  const cr = c.getBoundingClientRect();
+  let right = cr.width, bottom = cr.height;
+
+  const panel = $('#panel');
+  if (panel && !panel.classList.contains('hidden') && !panel.classList.contains('collapsed')){
+    const pr = panel.getBoundingClientRect();
+    if (pr.width > cr.width * 0.9)                    // 下から出るシート
+      bottom = Math.max(cr.height * 0.3, pr.top - cr.top);
+    else if (pr.left - cr.left > cr.width * 0.3)      // 右側のパネル
+      right = pr.left - cr.left;
+  }
+  const pad = 14;
+  return [pad, pad, Math.max(pad + 40, right - pad), Math.max(pad + 40, bottom - pad)];
 }
 
-/** 表示中の範囲・指定ズーム範囲について、必要なタイル URL を列挙する */
-function tileUrlsForView(zFrom, zTo){
+/** いま選んでいる範囲（度）。見えている四角を中心に、倍率のぶんだけ広げる */
+function dlBbox(){
+  const [x0, y0, x1, y1] = dlViewRect();
+  const pts = [[x0,y0], [x1,y0], [x1,y1], [x0,y1]].map(p => map.unproject(p));
+  const west  = Math.min(...pts.map(p => p.lng)), east  = Math.max(...pts.map(p => p.lng));
+  const south = Math.min(...pts.map(p => p.lat)), north = Math.max(...pts.map(p => p.lat));
+  const cx = (west + east) / 2, cy = (south + north) / 2;
+  const w = (east - west) * dlsel.scale / 2;
+  const h = (north - south) * dlsel.scale / 2;
+  return [cx - w, cy - h, cx + w, cy + h];
+}
+
+/** タイルの切れ目に合わせた範囲にする（実際に落ちるのはこの形） */
+function dlSnap(bbox, z){
+  const nw = deg2tile(bbox[0], bbox[3], z);
+  const se = deg2tile(bbox[2], bbox[1], z);
+  const x0 = Math.min(nw.x, se.x), x1 = Math.max(nw.x, se.x) + 1;
+  const y0 = Math.min(nw.y, se.y), y1 = Math.max(nw.y, se.y) + 1;
+  const lng = x => x / 2**z * 360 - 180;
+  const lat = y => {
+    const n = Math.PI - 2 * Math.PI * y / 2**z;
+    return 180 / Math.PI * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)));
+  };
+  return [lng(x0), lat(y1), lng(x1), lat(y0)];
+}
+
+const bboxPolygon = b => ({
+  type:'Feature', properties:{},
+  geometry:{ type:'Polygon', coordinates:[[
+    [b[0],b[1]], [b[2],b[1]], [b[2],b[3]], [b[0],b[3]], [b[0],b[1]] ]] },
+});
+
+/** 保存済みの範囲 */
+function savedAreas(){
+  try { return JSON.parse(localStorage.getItem(DL_AREAS_STORE)) || []; } catch { return []; }
+}
+function putSavedAreas(list){
+  try { localStorage.setItem(DL_AREAS_STORE, JSON.stringify(list)); } catch {}
+}
+
+/** 選択中の枠と、保存済みの枠を地図に描く */
+function drawDlOverlay(){
+  const sel = map.getSource('dl-sel'), saved = map.getSource('dl-saved');
+  if (!sel || !saved) return;
+  if (!dlsel.open){
+    sel.setData(EMPTY_FC);
+    saved.setData(EMPTY_FC);
+    return;
+  }
+  const z = Math.floor(map.getZoom());
+  sel.setData(bboxPolygon(dlSnap(dlBbox(), z + dlsel.span)));
+  saved.setData({ type:'FeatureCollection',
+                  features: savedAreas().map(a => bboxPolygon(a.bbox)) });
+}
+
+/** 指定した範囲・ズームで必要なタイルの URL を並べる */
+function tileUrlsForBbox(bbox, zFrom, zTo){
   const layers = [];
   const base = BASES.find(b => b.id === state.base);
-  if (base) layers.push(base);                       // Google を下絵にしている場合は対象外
-  for (const o of OVERLAYS) if (state.overlays.has(o.id)) layers.push(o);
+  if (base) layers.push(base);
+  for (const o of OVERLAYS) if (state.overlays.has(o.id) && !o.vector) layers.push(o);
 
-  const bounds = map.getBounds();
   const urls = [];
   for (const layer of layers){
     for (let z = zFrom; z <= Math.min(zTo, layer.maxzoom); z++){
-      const r = tileRangeForBounds(bounds, z);
-      for (let x = r.x0; x <= r.x1; x++)
-        for (let y = r.y0; y <= r.y1; y++)
+      const nw = deg2tile(bbox[0], bbox[3], z);
+      const se = deg2tile(bbox[2], bbox[1], z);
+      for (let x = Math.min(nw.x, se.x); x <= Math.max(nw.x, se.x); x++)
+        for (let y = Math.min(nw.y, se.y); y <= Math.max(nw.y, se.y); y++)
           urls.push({ url:`${GSI_TILE}/${layer.id}/${z}/${x}/${y}.${layer.ext}`, ext:layer.ext });
     }
   }
   return urls;
+}
+
+/**
+ * 保存した範囲を 1 つ消す。
+ * 範囲どうしが重なっていることがあるので、ほかの範囲でも使うタイルは残す。
+ */
+async function removeSavedArea(i){
+  const list = savedAreas();
+  const a = list[i];
+  if (!a) return;
+
+  const keep = new Set();
+  list.forEach((o, k) => {
+    if (k === i) return;
+    for (const u of tileUrlsForBbox(o.bbox, o.zFrom, o.zTo)) keep.add(u.url);
+  });
+
+  try {
+    const cache = await caches.open(TILE_CACHE_NAME);
+    for (const u of tileUrlsForBbox(a.bbox, a.zFrom, a.zTo))
+      if (!keep.has(u.url)) await cache.delete(u.url);
+  } catch {}
+
+  list.splice(i, 1);
+  putSavedAreas(list);
+}
+
+/** できるだけ消されないように、ブラウザへお願いする */
+async function askPersist(){
+  if (!navigator.storage || !navigator.storage.persist) return null;
+  try {
+    if (await navigator.storage.persisted()) return true;
+    return await navigator.storage.persist();
+  } catch { return null; }
 }
 
 function estimateBytes(urls){
@@ -7178,11 +7337,71 @@ async function clearTileCache(){
 
 /* ---------- パネル ---------- */
 
+/** くわしさ（現在のズームから何段ぶん深く保存するか） */
+const DL_SPANS = [
+  { v:0, label:'いまの見え方だけ',   note:'拡大すると、ぼやけます' },
+  { v:1, label:'すこし拡大まで',     note:'' },
+  { v:2, label:'標準（おすすめ）',   note:'町の道が読める程度まで' },
+  { v:3, label:'くわしい',           note:'建物の形まで' },
+  { v:4, label:'とてもくわしい',     note:'枚数がとても多くなります' },
+];
+
+/** 選んだ範囲のいまの見積り */
+function dlQuote(){
+  const z = Math.floor(map.getZoom());
+  const zTo = z + dlsel.span;
+  const bbox = dlSnap(dlBbox(), zTo);
+  const urls = tileUrlsForBbox(bbox, z, zTo);
+  const bytes = estimateBytes(urls);
+  return { z, zTo, bbox, urls, bytes,
+           sec: Math.ceil(urls.length / 12) };  // 実測でおよそ毎秒 12 枚
+}
+
+/** 範囲の広さ（およその km） */
+function dlSpanKm(bbox){
+  const km = (a, b) => {
+    const R = 6371, d2r = Math.PI / 180;
+    const dLat = (b[1]-a[1]) * d2r, dLng = (b[0]-a[0]) * d2r;
+    const x = dLng * Math.cos((a[1]+b[1])/2 * d2r);
+    return Math.sqrt(x*x + dLat*dLat) * R;
+  };
+  return [km([bbox[0],bbox[1]], [bbox[2],bbox[1]]),
+          km([bbox[0],bbox[1]], [bbox[0],bbox[3]])];
+}
+
+const fmtKm = v => v < 10 ? v.toFixed(1) : Math.round(v);
+
+/** 保存済みの範囲の一覧 */
+function savedAreaHtml(){
+  const list = savedAreas();
+  if (!list.length)
+    return '<div class="p-empty" style="padding-top:0">まだ保存した範囲はありません。</div>';
+  return `<ul class="p-list dl-areas">
+    ${list.map((a, i) => {
+      const [w, h] = dlSpanKm(a.bbox);
+      return `<li data-i="${i}">
+        <span class="sg-ic"><svg viewBox="0 0 24 24"><path d="M20.5 3l-.16.03L15 5.1 9 3 3.36 4.9c-.21.07-.36.25-.36.48V20.5c0 .28.22.5.5.5l.16-.03L9 18.9l6 2.1 5.64-1.9c.21-.07.36-.25.36-.48V3.5c0-.28-.22-.5-.5-.5zM15 19l-6-2.11V5l6 2.11V19z"/></svg></span>
+        <span class="li-txt">${esc(a.name || '保存した範囲')}<div class="li-sub">
+          およそ ${fmtKm(w)} × ${fmtKm(h)} km ／ z${a.zFrom}〜z${a.zTo} ／
+          ${a.tiles.toLocaleString()} 枚 ${fmtBytes(a.bytes)}</div></span>
+        <button class="iconbtn small" data-goto="${i}" title="この範囲へ移動">
+          <svg viewBox="0 0 24 24"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zm8.94 3A9 9 0 0 0 13 3.06V1h-2v2.06A9 9 0 0 0 3.06 11H1v2h2.06A9 9 0 0 0 11 20.94V23h2v-2.06A9 9 0 0 0 20.94 13H23v-2h-2.06zM12 19a7 7 0 1 1 0-14 7 7 0 0 1 0 14z"/></svg>
+        </button>
+        <button class="iconbtn small" data-del="${i}" title="この範囲を削除">
+          <svg viewBox="0 0 24 24"><path d="M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+        </button>
+      </li>`;
+    }).join('')}
+  </ul>`;
+}
+
 async function showOfflinePanel(){
   const supported = offlineSupported();
   const env = browserEnv();
   const online = navigator.onLine;
-  const z = Math.floor(map.getZoom());
+
+  const persisted = navigator.storage && navigator.storage.persisted
+    ? await navigator.storage.persisted().catch(() => null) : null;
 
   openPanel(`
     <div class="p-body">
@@ -7202,31 +7421,53 @@ async function showOfflinePanel(){
           保存した地図が消えにくくなり、アプリのように起動できます。
         </div>` : ''}
 
-      <div class="p-sec-title">地図をダウンロード</div>
+      <div class="p-sec-title">ダウンロードする範囲</div>
       <div class="p-empty" style="padding-top:0">
-        いま表示している範囲の地図を保存します。ズームを上げるほど枚数が増えます。
+        地図を動かして、<b class="dl-legend sel">青いわく</b>の中に入れてください。
+        そのわくの中が保存されます。
+        ${savedAreas().length ? '<b class="dl-legend done">緑のわく</b>は保存済みです。' : ''}
       </div>
+
+      <div class="seg" id="dlScale">
+        ${DL_SCALES.map(s => `<button data-v="${s.v}"
+          class="${s.v === dlsel.scale ? 'on' : ''}">${s.label}</button>`).join('')}
+      </div>
+
       <div class="p-row">
         <svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
         <div style="flex:1 1 auto">
-          <div class="k">保存するズーム範囲</div>
-          <select id="dlZoom" class="dl-select">
-            ${[0,1,2,3,4].map(n => `<option value="${n}" ${n === 2 ? 'selected' : ''}>
-              現在(z${z}) 〜 z${z+n}${n === 0 ? '（現在のみ）' : ''}</option>`).join('')}
+          <div class="k">くわしさ</div>
+          <select id="dlSpan" class="dl-select">
+            ${DL_SPANS.map(o => `<option value="${o.v}" ${o.v === dlsel.span ? 'selected' : ''}
+              >${o.label}${o.note ? '：' + o.note : ''}</option>`).join('')}
           </select>
         </div>
       </div>
-      <div id="dlEstimate" class="p-empty" style="padding:4px 0 10px"></div>
+
+      <div id="dlEstimate" class="dl-quote"></div>
       <div id="dlProgress" class="stalebar hidden"></div>
       <div class="dl-btns">
-        <button class="btn primary" id="dlStart" ${supported && online ? '' : 'disabled'}>ダウンロード</button>
+        <button class="btn primary" id="dlStart" ${supported && online ? '' : 'disabled'}>この範囲をダウンロード</button>
         <button class="btn hidden" id="dlCancel">中止</button>
       </div>
 
-      <div class="p-sec-title">保存済み</div>
+      <div class="p-sec-title">保存済みの範囲</div>
+      ${savedAreaHtml()}
       <div id="dlStats" class="p-empty" style="padding-top:0">集計中…</div>
+      <div class="p-row">
+        <svg viewBox="0 0 24 24"><path d="M18 8h-1V6A5 5 0 0 0 7 6v2H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V10a2 2 0 0 0-2-2zm-6 9a2 2 0 1 1 0-4 2 2 0 0 1 0 4zM9 8V6a3 3 0 0 1 6 0v2H9z"/></svg>
+        <div style="flex:1 1 auto">
+          <div class="k">保存した地図を消えにくくする</div>
+          <div class="v" id="dlPersistState">${
+            persisted === true ? '設定済み（空き容量が減っても消されにくくなります）'
+            : persisted === false ? '未設定（端末の空きが減ると、消される場合があります）'
+            : 'この端末では設定できません'}</div>
+        </div>
+        ${persisted === false
+          ? '<button class="btn" id="dlPersist">設定する</button>' : ''}
+      </div>
       <div class="dl-btns">
-        <button class="btn" id="dlClear">保存した地図を削除</button>
+        <button class="btn" id="dlClear">保存した地図をすべて削除</button>
       </div>
 
       <div class="p-sec-title">オフラインでできること</div>
@@ -7238,32 +7479,51 @@ async function showOfflinePanel(){
       </div>
     </div>`);
 
+  dlsel.open = true;   // openPanel のあとで立てる（他のパネルを開いたら自動で下りる）
+
   const copyBtn = $('#dlCopyUrl');
   if (copyBtn) copyBtn.onclick = () =>
     copyText(location.href, 'URL をコピーしました。Safari に貼り付けて開いてください');
 
-  const zoomSel = $('#dlZoom');
   const est = $('#dlEstimate');
 
   const updateEstimate = () => {
-    const n = parseInt(zoomSel.value, 10);
-    const urls = tileUrlsForView(z, z + n);
-    est.innerHTML = `およそ <b>${urls.length.toLocaleString()}</b> 枚・`
-      + `<b>${fmtBytes(estimateBytes(urls))}</b>`
-      + (urls.length > MAX_DOWNLOAD_TILES
-          ? `<br><span style="color:#c5221f">枚数が多すぎます（上限 ${MAX_DOWNLOAD_TILES.toLocaleString()} 枚）。`
-            + `地図を拡大するかズーム範囲を狭めてください。</span>` : '');
-    $('#dlStart').disabled = !supported || !navigator.onLine || urls.length > MAX_DOWNLOAD_TILES || !urls.length;
-    return urls;
+    const q = dlQuote();
+    const [w, h] = dlSpanKm(q.bbox);
+    const over = q.urls.length > MAX_DOWNLOAD_TILES;
+    const min = Math.ceil(q.sec / 60);
+    est.innerHTML =
+      `<div class="dq-main">およそ <b>${fmtKm(w)} × ${fmtKm(h)} km</b>`
+      + `　<b>${fmtBytes(q.bytes)}</b>　${q.urls.length.toLocaleString()} 枚</div>`
+      + `<div class="dq-sub">z${q.z}〜z${q.zTo}／かかる時間のめやす `
+      + (q.sec < 90 ? `${q.sec} 秒` : `${min} 分`) + '</div>'
+      + (over ? `<div class="dq-warn">枚数が多すぎます（上限 ${MAX_DOWNLOAD_TILES.toLocaleString()} 枚）。`
+              + '範囲をせまくするか、くわしさを下げてください。</div>' : '');
+    const btn = $('#dlStart');
+    if (btn) btn.disabled = !supported || !navigator.onLine || over || !q.urls.length;
+    drawDlOverlay();
+    return q;
   };
-  zoomSel.onchange = updateEstimate;
   updateEstimate();
+  setTimeout(updateEstimate, 350);   // パネルが開ききってから、わくを合わせ直す
+
+  // 範囲の広さ
+  $('#dlScale').onclick = e => {
+    const b = e.target.closest('button'); if (!b) return;
+    dlsel.scale = parseFloat(b.dataset.v);
+    $$('#dlScale button').forEach(x => x.classList.toggle('on', x === b));
+    updateEstimate();
+  };
+  $('#dlSpan').onchange = e => { dlsel.span = parseInt(e.target.value, 10); updateEstimate(); };
+
+  // 地図を動かしたら、わくと見積りを追いかける
+  ostate.onMove = updateEstimate;
 
   const stats = await cacheStats();
   const statsEl = $('#dlStats');
   if (statsEl){
     statsEl.innerHTML = stats
-      ? `地図タイル <b>${stats.tiles.toLocaleString()}</b> 枚`
+      ? `保存中の地図タイル <b>${stats.tiles.toLocaleString()}</b> 枚`
         + `／アプリ ${stats.app} 件／住所・標高 ${stats.api} 件`
         + (stats.usage != null
             ? `<br>このサイトの使用量 ${fmtBytes(stats.usage)}`
@@ -7271,28 +7531,84 @@ async function showOfflinePanel(){
       : '取得できませんでした';
   }
 
+  const persistBtn = $('#dlPersist');
+  if (persistBtn) persistBtn.onclick = async () => {
+    const ok = await askPersist();
+    toast(ok ? '消えにくい設定にしました'
+             : 'この端末では設定できませんでした。ホーム画面に追加すると通ることがあります');
+    showOfflinePanel();
+  };
+
+  $$('.dl-areas').forEach(el => el.addEventListener('click', async e => {
+    const g = e.target.closest('[data-goto]');
+    if (g){
+      const a = savedAreas()[+g.dataset.goto];
+      if (a) map.fitBounds([[a.bbox[0],a.bbox[1]], [a.bbox[2],a.bbox[3]]], { padding:40 });
+      return;
+    }
+    const d = e.target.closest('[data-del]');
+    if (d){
+      const a = savedAreas()[+d.dataset.del];
+      if (!a || !confirm(`「${a.name || '保存した範囲'}」の地図を削除します。よろしいですか？`)) return;
+      await removeSavedArea(+d.dataset.del);
+      toast('削除しました');
+      showOfflinePanel();
+    }
+  }));
+
   $('#dlStart').onclick = async () => {
-    const urls = updateEstimate();
-    if (!urls.length) return;
+    const q = updateEstimate();
+    if (!q.urls.length) return;
     ostate.busy = true; ostate.cancel = false;
     $('#dlStart').disabled = true;
     $('#dlCancel').classList.remove('hidden');
     const prog = $('#dlProgress');
     prog.classList.remove('hidden');
 
+    // 空きが足りるか、先に確かめる
+    if (navigator.storage && navigator.storage.estimate){
+      try {
+        const e = await navigator.storage.estimate();
+        if (e.quota && e.usage + q.bytes > e.quota * 0.9){
+          prog.classList.add('hidden');
+          ostate.busy = false;
+          $('#dlCancel').classList.add('hidden');
+          $('#dlStart').disabled = false;
+          alert('この端末の空き容量が足りません。\n'
+              + `必要：${fmtBytes(q.bytes)}／残り：${fmtBytes(Math.max(0, e.quota - e.usage))}\n\n`
+              + '範囲をせまくするか、保存済みの範囲を削除してください。');
+          return;
+        }
+      } catch {}
+    }
+
     const t0 = Date.now();
-    const r = await downloadTiles(urls, (done, saved, skipped, failed) => {
-      const p = Math.round(done / urls.length * 100);
+    const r = await downloadTiles(q.urls, (done, saved, skipped, failed) => {
+      const p = Math.round(done / q.urls.length * 100);
       if (prog) prog.textContent =
-        `ダウンロード中… ${done.toLocaleString()} / ${urls.length.toLocaleString()}（${p}%）`
+        `ダウンロード中… ${done.toLocaleString()} / ${q.urls.length.toLocaleString()}（${p}%）`
         + `　新規 ${saved}／既存 ${skipped}${failed ? `／失敗 ${failed}` : ''}`;
     });
     ostate.busy = false;
     $('#dlCancel').classList.add('hidden');
+
+    // 保存した範囲を控えておく（あとで一覧・削除できるように）
+    if (r.saved || r.skipped){
+      let name = '';
+      try {
+        name = await reverseGeocode((q.bbox[0]+q.bbox[2])/2, (q.bbox[1]+q.bbox[3])/2);
+      } catch {}
+      const list = savedAreas();
+      list.unshift({ name:name || '保存した範囲', bbox:q.bbox,
+                     zFrom:q.z, zTo:q.zTo, tiles:q.urls.length,
+                     bytes:q.bytes, savedAt:new Date().toISOString() });
+      putSavedAreas(list);
+    }
+
     toast(ostate.cancel
       ? `中止しました（${r.saved} 枚を保存）`
       : `保存しました：新規 ${r.saved} 枚／既存 ${r.skipped} 枚`
-        + `${r.failed ? `／失敗 ${r.failed} 枚` : ''}（${Math.round((Date.now()-t0)/1000)} 秒）`, 6000);
+        + `${r.failed ? `／失敗 ${r.failed} 枚` : ''}（${Math.round((Date.now()-t0)/1000)} 秒）`);
     showOfflinePanel();
   };
 
@@ -7301,15 +7617,27 @@ async function showOfflinePanel(){
   $('#dlClear').onclick = async () => {
     if (!confirm('保存した地図タイルをすべて削除します。よろしいですか？')) return;
     await clearTileCache();
+    putSavedAreas([]);
     toast('保存した地図を削除しました');
     showOfflinePanel();
   };
+}
+
+/** パネルを閉じたら、わくも消す */
+function closeOfflinePanel(){
+  if (!dlsel.open) return;
+  dlsel.open = false;
+  ostate.onMove = null;
+  drawDlOverlay();
 }
 
 /* ---------- 状態表示 ---------- */
 
 function bindOfflineUI(){
   registerServiceWorker();
+
+  // ダウンロード範囲のわくは、地図の動きについていく
+  map.on('move', () => { if (dlsel.open && ostate.onMove) ostate.onMove(); });
 
   const notify = () => {
     document.body.classList.toggle('is-offline', !navigator.onLine);
@@ -7490,12 +7818,23 @@ function buildStyle(){
   sources['osm-paths']  = { type:'geojson', data:EMPTY_FC }; // OSM の登山道
   sources['osm-routes'] = { type:'geojson', data:EMPTY_FC }; // OSM の登山ルート（まとまり）
   sources['sv-cover']   = { type:'geojson', data:EMPTY_FC }; // ストリートビューのある道
+  sources['dl-saved']   = { type:'geojson', data:EMPTY_FC }; // 保存済みの範囲
+  sources['dl-sel']     = { type:'geojson', data:EMPTY_FC }; // これから保存する範囲
 
   layers.push(
     { id:'accuracy-fill', type:'fill', source:'accuracy',
       paint:{ 'fill-color':'#4285f4', 'fill-opacity':0.15 } },
     { id:'accuracy-line', type:'line', source:'accuracy',
       paint:{ 'line-color':'#4285f4', 'line-opacity':0.35, 'line-width':1 } },
+    // オフライン地図の範囲（保存済み＝緑、これから＝青）
+    { id:'dl-saved-fill', type:'fill', source:'dl-saved',
+      paint:{ 'fill-color':'#188038', 'fill-opacity':0.12 } },
+    { id:'dl-saved-line', type:'line', source:'dl-saved',
+      paint:{ 'line-color':'#188038', 'line-width':1.5, 'line-opacity':0.7 } },
+    { id:'dl-sel-fill', type:'fill', source:'dl-sel',
+      paint:{ 'fill-color':'#1a73e8', 'fill-opacity':0.10 } },
+    { id:'dl-sel-line', type:'line', source:'dl-sel',
+      paint:{ 'line-color':'#1a73e8', 'line-width':2.5, 'line-dasharray':[3,2] } },
     // ストリートビューのある道（水色。ほかの線より下に敷く）
     { id:'sv-cover-line', type:'line', source:'sv-cover',
       layout:{ 'line-cap':'round', 'line-join':'round', visibility:'none' },
@@ -8063,6 +8402,8 @@ function showResultList(q, results){
  * それ以降（住所の詳細や標高など）はシート内のスクロールで見せる。
  */
 function openPanel(html, compact){
+  // 別の内容に切り替わるので、オフライン地図の範囲のわくは消す
+  if (typeof closeOfflinePanel === 'function') closeOfflinePanel();
   $('#panelBody').innerHTML = html;
   const p = $('#panel');
   p.classList.remove('hidden');
@@ -8072,6 +8413,7 @@ function openPanel(html, compact){
   setPanelCollapsed(false);
 }
 function closePanel(){
+  if (typeof closeOfflinePanel === 'function') closeOfflinePanel();
   $('#panel').classList.add('hidden');
   $('#panelTab').classList.add('hidden');
 }
@@ -8183,6 +8525,10 @@ function showPlace(place){
           <span class="circ"><svg viewBox="0 0 24 24"><path d="M20.5 3l-.16.03L15 5.1 9 3 3.36 4.9c-.21.07-.36.25-.36.48V20.5c0 .28.22.5.5.5l.16-.03L9 18.9l6 2.1 5.64-1.9c.21-.07.36-.25.36-.48V3.5c0-.28-.22-.5-.5-.5zM15 19l-6-2.11V5l6 2.11V19z"/></svg></span>
           Gマップ
         </button>
+        <button class="p-act ghost" id="actGnav" title="現在地からここまで Google マップでナビを始める">
+          <span class="circ"><svg viewBox="0 0 24 24"><path d="M21.41 11.58 12.41 2.59A2 2 0 0 0 11 2H4a2 2 0 0 0-2 2v7c0 .55.22 1.05.59 1.42l9 9c.36.36.86.58 1.41.58s1.05-.22 1.41-.59l7-7A1.99 1.99 0 0 0 22 13c0-.55-.23-1.06-.59-1.42zM12.5 17.5l-1.06-2.94L8.5 13.5l6-3 -2 7z"/></svg></span>
+          Gナビ
+        </button>
         <button class="p-act ghost" id="actSv"
                 title="${hasApiKey() ? 'この場所のストリートビュー' : 'Google マップでストリートビューを開く'}">
           <span class="circ"><svg viewBox="0 0 24 24"><circle cx="12" cy="4" r="2.4"/><path d="M15.5 8h-7A1.5 1.5 0 0 0 7 9.5V14h2v8h6v-8h2V9.5A1.5 1.5 0 0 0 15.5 8z"/></svg></span>
@@ -8193,6 +8539,22 @@ function showPlace(place){
           共有
         </button>
       </div>
+
+      <a class="p-row click" id="rowNavExt" href="${esc(googleNavUrl([place.lng, place.lat]))}"
+         target="_blank" rel="noopener" data-ext>
+        <svg viewBox="0 0 24 24"><path d="M21.41 11.58 12.41 2.59A2 2 0 0 0 11 2H4a2 2 0 0 0-2 2v7c0 .55.22 1.05.59 1.42l9 9c.36.36.86.58 1.41.58s1.05-.22 1.41-.59l7-7A1.99 1.99 0 0 0 22 13c0-.55-.23-1.06-.59-1.42zM12.5 17.5l-1.06-2.94L8.5 13.5l6-3 -2 7z"/></svg>
+        <div>
+          <div class="v">Google マップでナビ（車）</div>
+          <div class="k">現在地からこの地点まで案内します
+            <span class="navmodes">
+              <button type="button" class="navmode" data-mode="walking">徒歩</button>
+              <button type="button" class="navmode" data-mode="bicycling">自転車</button>
+              <button type="button" class="navmode" data-mode="transit">公共交通</button>
+            </span>
+          </div>
+        </div>
+        <svg class="ext" viewBox="0 0 24 24"><path d="M19 19H5V5h7V3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg>
+      </a>
 
       <a class="p-row click" id="rowSvExt" href="${esc(streetViewUrl([place.lng, place.lat]))}"
          target="_blank" rel="noopener" data-ext>
@@ -8245,6 +8607,14 @@ function showPlace(place){
   $('#actShare').onclick = () => sharePlace(place);
   $('#actSv').onclick    = () => openStreetView([place.lng, place.lat]);
   $('#actGmap').onclick  = () => openGoogleMaps([place.lng, place.lat]);
+  $('#actGnav').onclick  = () => openGoogleNav([place.lng, place.lat]);
+
+  // 移動手段のボタン（親リンクの車ナビが動かないよう、押されたら止める）
+  $$('#rowNavExt .navmode').forEach(b => b.addEventListener('click', e => {
+    e.preventDefault();
+    e.stopPropagation();
+    openGoogleNav([place.lng, place.lat], b.dataset.mode);
+  }));
 
   // スマホでは新しいタブを作らず同じタブで開く（戻れなくなるのを防ぐ）
   $$('#panelBody a[data-ext]').forEach(a => {

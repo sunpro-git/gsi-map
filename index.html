@@ -468,6 +468,12 @@ min-width:460px;max-width:calc(100vw - 24px);padding:10px 14px;
 .tk-cell .tk{font-size:10px;color:var(--text-sub);margin-top:1px;}
 .tk-cell.nav-only{display:none;}
 .trackbar.nav .tk-cell.nav-only{display:block;}
+body.nav-on #searchCard,
+body.nav-on #suggest,
+body.nav-on #clipBar,
+body.nav-on #panel,
+body.nav-on #panelTab,
+body.nav-on #routeBar{display:none !important;}
 .trackbar.nav #tkRemain{color:var(--blue);}
 .trackbar.offroute #tkOff{color:#d93025;}
 .tk-sub{
@@ -495,6 +501,9 @@ display:flex;align-items:center;gap:10px;
 padding:0 0 8px;margin-bottom:8px;border-bottom:1px solid var(--line);
 }
 .tk-maneuver.hidden{display:none;}
+.tk-maneuver.near .mv-ic{background:var(--blue);}
+.tk-maneuver.near .mv-ic svg{fill:#fff;}
+.tk-maneuver.near .mv-dist{color:var(--blue);}
 .mv-ic{
 flex:none;width:38px;height:38px;border-radius:50%;background:#e8f0fe;
 display:flex;align-items:center;justify-content:center;
@@ -4925,6 +4934,7 @@ const cstate = {
   heading: null,        // 真北を 0 とした端末の向き（度・平滑化後）
   raw: null,            // センサーの生値
   headingUp: false,     // 向いている方向を上にして地図を回す
+  northing: false,      // 北向きへ戻している最中
   listening: false,
 };
 
@@ -5178,25 +5188,37 @@ function animate(){
   const src = map.getSource('accuracy');
   if (src) src.setData(circlePolygon(s.lng, s.lat, tstate.shownAcc));
 
-  // 追従（補間後の位置に合わせるので、地図もぬるぬる動く）
+  // 地図の位置と向きは、必ずこの 1 回の jumpTo でまとめて動かす。
   //
+  // jumpTo は進行中の easeTo を打ち切ってしまうので、別々に呼ぶと
+  // 「北へ戻す easeTo が毎フレームの追従に潰されて、斜めのまま止まる」
+  // という不具合になる。向きの変更もここで少しずつ行う。
+  const cam = {};
+
   // 指で操作している間は動かさない。毎フレーム jumpTo すると
   // 指の操作でずらした分をその場で打ち消してしまい、地図が固まったようになる。
   if (tstate.follow && !tstate.interacting && !tstate.recentering)
-    map.jumpTo({ center:[s.lng, s.lat] });
+    cam.center = [s.lng, s.lat];
 
-  // ヘディングアップ（プログラムから地図を回す。指での回転操作は無効のまま）
-  if (cstate.headingUp && cstate.heading != null && !isGoogleBase(state.base)){
+  // 向き。ヘディングアップなら進行方向へ、解除したなら北へ、少しずつ回す
+  const canRotate = !isGoogleBase(state.base);
+  if (canRotate && cstate.headingUp && cstate.heading != null){
     const d = shortestDelta(map.getBearing(), cstate.heading);
-    if (Math.abs(d) > 0.3) map.jumpTo({ bearing: map.getBearing() + d * BEARING_EASE });
+    if (Math.abs(d) > 0.3) cam.bearing = map.getBearing() + d * BEARING_EASE;
+  } else if (canRotate && cstate.northing){
+    const d = shortestDelta(map.getBearing(), 0);
+    if (Math.abs(d) > 0.3) cam.bearing = map.getBearing() + d * BEARING_EASE;
+    else { cam.bearing = 0; cstate.northing = false; }   // north up 完了
   }
+
+  if (cam.center || cam.bearing != null) map.jumpTo(cam);
 
   updateNavArrow();
 
   // 目標に十分近づき、向きも安定していれば止める（電池のため）
   const settled = near && (rawHeading == null
     || Math.abs(shortestDelta(cstate.heading, rawHeading)) < 0.5);
-  if (!settled || tstate.follow || cstate.headingUp) startAnimation();
+  if (!settled || tstate.follow || cstate.headingUp || cstate.northing) startAnimation();
 }
 
 /* ---------- 追従 ---------- */
@@ -5260,8 +5282,10 @@ function toggleFollow(){ setFollow(!tstate.follow); }
 function bindFollowRelease(){
   // originalEvent があるものだけが利用者の操作。プログラムからの移動では外さない
   const release = e => {
+    if (!e || !e.originalEvent) return;      // プログラムからの移動では外さない
+    cstate.northing = false;                 // 手で回したら、北へ戻す動きは止める
     if (nav.active) return;
-    if (e && e.originalEvent && tstate.follow) setFollow(false);
+    if (tstate.follow) setFollow(false);
   };
   map.on('dragstart', release);
   map.on('zoomstart', release);
@@ -5317,6 +5341,22 @@ function startCompass(){
   window.addEventListener('deviceorientation', onOrient, true);
 }
 
+/**
+ * 地図を北向きに戻す。
+ *
+ * 現在地に追従している間は、描画ループが毎フレーム jumpTo するので
+ * easeTo が打ち切られてしまう。そのときはループ側で少しずつ回す。
+ */
+function turnNorthUp(){
+  if (tstate.follow && tstate.lastFix){
+    cstate.northing = true;
+    startAnimation();
+  } else {
+    cstate.northing = false;
+    map.easeTo({ bearing:0, pitch:0, duration:400 });
+  }
+}
+
 /** 「北が上」と「進行方向が上」を入れ替える（方位マーク・ナビバーの両方から呼ぶ） */
 async function toggleHeadingUp(){
   if (!cstate.headingUp){
@@ -5326,11 +5366,12 @@ async function toggleHeadingUp(){
       return;
     }
     cstate.headingUp = true;
+    cstate.northing = false;
     startAnimation();
     toast('進行方向が上になります');
   } else {
     cstate.headingUp = false;
-    map.easeTo({ bearing:0, pitch:0, duration:400 });
+    turnNorthUp();
     toast('北が上になります');
   }
   updateTrackBar();
@@ -5348,7 +5389,7 @@ async function toggleHeadingUp(){
  *   - 往復ルート（同じ道を戻る）で、復路にいるのに往路と判定されて
  *     進んだ距離が巻き戻るのを防ぐ
  */
-function nearestOnRouteGeo(lngLat, lo, hi){
+function nearestOnRouteGeo(lngLat, lo, hi, expect){
   const paths = rstate.paths.filter(p => p.length >= 2);
   if (!paths.length) return null;
 
@@ -5373,10 +5414,17 @@ function nearestOnRouteGeo(lngLat, lo, hi){
       const off = Math.hypot(P[0]-(a[0]+t*dx), P[1]-(a[1]+t*dy));
       const segLen = haversine(path[i], path[i+1]);
       const at = acc + segLen * t;
-      // 往復ルートでは往路と復路が同じ線に重なる。距離が同じくらいなら
-      // 先に進んでいるほうを選ぶ（範囲を絞って探しているときだけ）
+      // 往復ルートでは往路と復路が同じ線にぴたりと重なるので、
+      // 「どちらの脚にいるか」を線の形だけでは決められない。
+      //
+      // そこで、離れ方がほぼ同じときは「前回からの移動量ぶんだけ進んだ位置」
+      // （expect）にいちばん近いほうを選ぶ。折り返しの手前で復路と取り違えて
+      // 一気に進んでしまうのを防ぐ。
+      const tie = forward && Math.abs(off - best?.off) <= 1;
       const better = !best || off < best.off - 1
-                  || (forward && Math.abs(off - best.off) <= 1 && at > best.fromStart);
+                  || (tie && expect != null
+                      ? Math.abs(at - expect) < Math.abs(best.fromStart - expect)
+                      : tie && at > best.fromStart);
       if (better) best = { off, fromStart: at };
       acc += segLen;
     }
@@ -5415,8 +5463,10 @@ function navNearest(here){
   // これで往復ルートでも、まだ往路なのに復路と取り違えることがない
   const moved = nav.lastPos ? haversine(nav.lastPos, here) : NAV_WINDOW_M;
   const step = Math.max(60, Math.min(NAV_WINDOW_M, moved * 3 + 40));
+  // 移動量ぶんだけ進んだあたりが「いるはずの場所」。重なった線の判別に使う
+  const expect = nav.lastPos ? nav.progress + moved : null;
   for (const fwd of [step, NAV_WINDOW_M * 4]){
-    const n = nearestOnRouteGeo(here, nav.progress - NAV_BACK_M, nav.progress + fwd);
+    const n = nearestOnRouteGeo(here, nav.progress - NAV_BACK_M, nav.progress + fwd, expect);
     if (n && n.off <= OFF_ROUTE_M) return n;
   }
   // 近くに見当たらない（ルートを大きく外れた）ときだけ、全体から探す
@@ -5567,6 +5617,11 @@ async function reroute(){
     if (!nav.active) return;                       // 待っている間にナビが終わっていたら何もしない
     // 走行中に画面が飛ばないよう、地図の表示範囲は変えない
     loadRoutePaths([r.coords], rstate.name || '', false);
+    // 引き直したら案内も新しいものに入れ替える。
+    // ここを忘れると、古いルートの「○ m 先 右折」が残って案内がずれる
+    nav.steps = (r.steps && r.steps.length) ? r.steps : null;
+    rstate.fromSearch = true;         // loadRoutePaths が false に戻すので立て直す
+    rstate.searchInfo = r;
     nav.avgSpeed = r.duration > 0 ? r.distance / r.duration : nav.avgSpeed;
     nav.offCount = 0;
     nav.arrived = false;
@@ -5588,14 +5643,39 @@ async function reroute(){
 
 /* ---------- 道路の案内（○ m 先 右折） ---------- */
 
-/** いまの位置から見て、次に曲がる地点 */
+const MV_PASSED_M = 12;   // 曲がり角をこれだけ通り過ぎたら、次の案内に切り替える
+
+/**
+ * いまの位置から見て、次に曲がる地点。
+ *
+ * at はルートの始点からその曲がり角までの距離。progress は自分が進んだ距離なので、
+ * at - progress が「あと何 m でその角か」になる。
+ *
+ * 角の手前で次の案内に切り替えると「曲がる直前に案内が消える」ので、
+ * 通り過ぎて MV_PASSED_M 進むまでは、その角を出したままにする。
+ */
 function nextManeuver(){
   if (!nav.steps || !nav.steps.length || nav.progress == null) return null;
   for (const s of nav.steps){
-    // 少し行き過ぎた案内は飛ばす（曲がり終えた直後に残らないように）
-    if (s.at - nav.progress > 5) return { ...s, ahead: s.at - nav.progress };
+    if (s.at == null || !isFinite(s.at)) continue;   // 距離の分からない案内は使わない
+    if (MV_START.has(s.type)) continue;              // 「出発」は曲がり角ではない
+    const ahead = s.at - nav.progress;
+    if (ahead > -MV_PASSED_M) return { ...s, ahead: Math.max(0, ahead) };
   }
   return null;
+}
+
+/**
+ * 案内に出す距離。
+ * 「347 m 先」のような細かい数字は読みにくく、GPS の誤差より細かくても意味がないので、
+ * 近いほど細かく、遠いほど粗く丸める。
+ */
+function fmtAhead(m){
+  if (!isFinite(m)) return '—';
+  if (m < 30)   return `${Math.round(m / 5) * 5} m`;
+  if (m < 100)  return `${Math.round(m / 10) * 10} m`;
+  if (m < 1000) return `${Math.round(m / 50) * 50} m`;
+  return `${(m / 1000).toFixed(1)} km`;
 }
 
 /**
@@ -5616,6 +5696,7 @@ const MV_ANGLE = {
 };
 const MV_FLAG = new Set([4, 5, 6]);          // 目的地
 const MV_ROUNDABOUT = new Set([26, 27]);     // ロータリー
+const MV_START = new Set([0, 1, 2, 3]);      // 出発（曲がり角ではないので案内に出さない）
 
 const MV_ICON = {
   arrow:'<svg viewBox="0 0 24 24"><path d="M11 21V7.83l-4.59 4.58L5 11l7-7 7 7-1.41 1.41L13 7.83V21z"/></svg>',
@@ -5637,9 +5718,11 @@ function updateManeuver(){
   if (!m){ box.classList.add('hidden'); return; }
   box.classList.remove('hidden');
   $('#tkMvIcon').innerHTML = maneuverIcon(m.type);
-  $('#tkMvDist').textContent = fmtDist(m.ahead);
+  $('#tkMvDist').textContent = fmtAhead(m.ahead);
   // 文字は道路名だけにとどめる（向きは矢印で分かるため）
   $('#tkMvText').textContent = m.road || '';
+  // 曲がり角が近づいたら色を変えて知らせる
+  box.classList.toggle('near', m.ahead < 60);
 }
 
 /* ---------- 画面を消さない ---------- */
@@ -5759,6 +5842,11 @@ async function startNavigation(){
   // ナビ中はルート作成バーを隠す（画面下がバーで埋まってしまうため）
   nav.routeBarWasOpen = !$('#routeBar').classList.contains('hidden');
   $('#routeBar').classList.add('hidden');
+
+  // 経路の入力・検索結果のパネルも閉じる。
+  // 案内はナビバーに出るので、開いたままだと地図が隠れるだけになる
+  closePanel();
+  if (typeof hideSuggest === 'function') hideSuggest();
 
   document.body.classList.add('nav-on', 'track-open');
   $('#trackBar').classList.remove('hidden');
@@ -9181,15 +9269,56 @@ async function osrmRoute(from, to){
   if (!res.ok || j.code !== 'Ok' || !j.routes || !j.routes.length)
     throw new Error(j.message || '経路が見つかりませんでした');
   const r = j.routes[0];
+
+  // ナビの「○ m 先 右折」に使えるよう、Valhalla と同じ形にそろえる。
+  //   at   … 出発点からその案内までの距離
+  //   type … 矢印の向きを決める番号（MV_ANGLE と対応）
+  let at = 0;
+  const steps = ((r.legs[0] && r.legs[0].steps) || []).map(s => {
+    const item = {
+      text: stepText(s),
+      road: s.name || '',
+      distance: s.distance,
+      at,                                  // この案内を行う地点まで
+      type: osrmManeuverType(s.maneuver || {}),
+    };
+    at += s.distance;                      // 次の案内はこの区間の先
+    return item;
+  });
+
   return {
     engine: 'osrm',
     coords: r.geometry.coordinates,
     distance: r.distance,
     duration: r.duration,
     hasToll: null, hasHighway: null, hasFerry: null,      // OSRM では分からない
-    steps: ((r.legs[0] && r.legs[0].steps) || [])
-             .map(s => ({ text: stepText(s), distance: s.distance })),
+    steps,
   };
+}
+
+/**
+ * OSRM の案内（type と modifier）を、Valhalla と同じ番号に読み替える。
+ * 矢印の向き（MV_ANGLE）と目的地の旗（MV_FLAG）を共通で使うため。
+ */
+function osrmManeuverType(mv){
+  if (mv.type === 'depart') return 1;
+  if (mv.type === 'arrive') return 4;
+  if (mv.type === 'roundabout' || mv.type === 'rotary') return 26;
+  if (mv.type === 'exit roundabout' || mv.type === 'exit rotary') return 27;
+
+  const ramp = mv.type === 'on ramp' || mv.type === 'off ramp';
+  const merge = mv.type === 'merge';
+  const byMod = {
+    'sharp right': ramp ? 18 : 11,
+    right:         ramp ? 18 : merge ? 37 : 10,
+    'slight right':ramp ? 18 : merge ? 37 : 9,
+    straight:      ramp ? 17 : merge ? 25 : 8,
+    'slight left': ramp ? 19 : merge ? 38 : 16,
+    left:          ramp ? 19 : merge ? 38 : 15,
+    'sharp left':  ramp ? 19 : 14,
+    uturn:         12,
+  };
+  return byMod[mv.modifier] != null ? byMod[mv.modifier] : 8;   // 既定は直進
 }
 
 /**
@@ -9823,7 +9952,7 @@ function bindKeyboard(){
       // 進行方向を上にしている最中なら、それを解いてから北へ戻す
       case 'n':
         if (cstate.headingUp) toggleHeadingUp();
-        else map.easeTo({ bearing:0, pitch:0, duration:400 });
+        else turnNorthUp();
         break;
     }
   });

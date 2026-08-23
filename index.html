@@ -1238,7 +1238,7 @@ border-radius:10px;padding:1px 8px;font-size:11px;font-family:inherit;cursor:poi
       <div class="tk"><svg viewBox="0 0 24 24"><path d="M2 20h20L14 6l-4 7-2-3z"/></svg>標高</div>
     </div>
   </div>
-  <!-- ふだんは出さず、ルートを外れたときや測位が不安定なときだけ知らせる -->
+  <!-- ふだんは出さない。ルートを引き直せなかったときなど、まれな場合だけ出す -->
   <div class="tk-sub hidden" id="tkSub"></div>
   <div class="tk-btns">
     <button id="tkHeadUp" class="chipbtn" title="向いている方向を上にする">
@@ -4933,7 +4933,7 @@ const BEARING_EASE = 0.12;
 const MIN_ACCURACY_JUMP = 100;   // これより精度が悪い測位は、既に良い位置がある場合は無視
 
 const nav = {
-  active:false, lastWarn:0, offRoute:false, arrived:false,
+  active:false, offRoute:false, arrived:false,
   dest:null,          // 目的地 { lng, lat, title }
   avgSpeed:null,      // 経路全体の平均速度（m/s）。所要時間の目安に使う
   autoReroute:false,  // ルートを外れたら自動で再検索する
@@ -4949,7 +4949,7 @@ const nav = {
   wakeLock:null,      // 画面を消さないための保持
 };
 
-const OFF_ROUTE_M = 50;        // これ以上ルートから離れたら警告する
+const OFF_ROUTE_M = 50;        // これ以上ルートから離れたら、バーの枠を赤くする
 const REROUTE_OFF_M = 10;      // 道路のナビでは、これだけ外れたら引き直す
 const TARGET_AHEAD_M = 30;     // この距離だけ先を「進む方向」の目標にする
 const REROUTE_HITS = 2;        // 続けてこの回数外れたら再検索する
@@ -4958,7 +4958,6 @@ const NAV_WINDOW_M = 300;      // ルート上の現在位置を、前回位置�
 const NAV_BACK_M = 60;         // 後戻りとして認める範囲（測位のふらつき用）
 const ARRIVE_M = 30;           // ゴールまでこの距離になったら到着とみなす
 const ARRIVE_MIN_RUN_M = 100;  // ただし、これだけ進んでいない間は到着にしない
-const POOR_ACCURACY_M = 40;    // これより誤差が大きいときだけ「定まっていません」と出す
 const WALK_SPEED = 1.3;        // 平均速度が分からないときの目安（m/s・徒歩）
 
 /* ---------- 測位 ---------- */
@@ -5502,14 +5501,10 @@ function updateNavigation(){
   updateManeuver();
   if (nav.paused) return;              // 一時停止中は警告や再検索をしない
 
+  // ルートを外れていることはバーの赤い枠で分かる。
+  // 文字の注意書きやお知らせを重ねると点滅して邪魔になるので出さない。
   const off = d.off > OFF_ROUTE_M;
   $('#trackBar').classList.toggle('offroute', off);
-  showTrackNote(nav.rerouting ? 'ルートを引き直しています…'
-              : off ? `ルートから ${Math.round(d.off)} m 外れています` : '', off);
-  if (off && Date.now() - nav.lastWarn > 30000){
-    nav.lastWarn = Date.now();
-    toast(`ルートから ${Math.round(d.off)} m 離れています`, 5000);
-  }
   nav.offRoute = off;
 
   // 自動リルート：道路を走っているときは、わずかに外れた時点で引き直す。
@@ -5532,8 +5527,8 @@ function updateNavigation(){
 /**
  * いまの位置から目的地までの経路を引き直す。
  *
- * 運転中に何度もお知らせを出すと邪魔になるので、成功したときは黙って
- * ルートだけ差し替える。状況はナビバーの下の一行に出す。
+ * 運転中に何度も注意書きやお知らせを出すと邪魔になるので、黙ってルートだけ
+ * 差し替える。うまくいかなかったときだけ、バーの下に一行だけ出す。
  */
 async function reroute(){
   if (nav.rerouting || !nav.dest || !tstate.lastFix) return;
@@ -5546,7 +5541,6 @@ async function reroute(){
   }
   nav.rerouting = true;
   nav.lastReroute = Date.now();
-  showTrackNote('ルートを引き直しています…');
   try {
     const r = await routeBetween({ lng:tstate.lastFix.lng, lat:tstate.lastFix.lat }, nav.dest);
     if (!nav.active) return;                       // 待っている間にナビが終わっていたら何もしない
@@ -5559,10 +5553,13 @@ async function reroute(){
     nav.maxProgress = 0;
     nav.lastPos = null;
     nav.rerouting = false;
-    showTrackNote('');            // お知らせは出さず、そのまま案内を続ける
+    showTrackNote('');            // 何も出さず、そのまま案内を続ける
     updateNavigation();
   } catch {
+    // 失敗したときだけ知らせる。出しっぱなしにならないよう自分で消す
     showTrackNote('ルートを引き直せませんでした', true);
+    clearTimeout(nav.noteTimer);
+    nav.noteTimer = setTimeout(() => showTrackNote(''), 5000);
   } finally {
     nav.rerouting = false;
   }
@@ -5707,7 +5704,6 @@ async function startNavigation(){
   }
   nav.active = true;
   nav.offRoute = false;
-  nav.lastWarn = 0;
   nav.arrived = false;
   nav.offCount = 0;
   nav.lastReroute = 0;
@@ -5807,13 +5803,8 @@ function updateTrackBar(){
   const ele = tstate.lastFix && tstate.lastFix.ele;
   $('#tkEle').textContent = ele != null ? `${Math.round(ele)} m` : '—';
 
-  // 測位が大きくずれているときだけ知らせる（ふだんは出さない）
-  const acc = tstate.lastFix && tstate.lastFix.acc;
-  if (!nav.offRoute){
-    if (acc == null) showTrackNote('現在地を取得しています…');
-    else if (acc > POOR_ACCURACY_M) showTrackNote(`現在地が定まっていません（誤差 ±${Math.round(acc)} m）`);
-    else showTrackNote('');
-  }
+  // 測位の誤差は走行中に上下するため、注意書きを出すと点滅して邪魔になる。
+  // 現在地の丸の大きさで誤差は分かるので、ここでは何も出さない。
 
   // 道路の案内が出ているときは、方位の矢印を省いて表示を減らす
   bar.classList.toggle('road', !!(nav.steps && nav.steps.length));

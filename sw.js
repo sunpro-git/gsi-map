@@ -13,7 +13,7 @@
 const VERSION    = 'v2';
 // アプリ本体のキャッシュ名だけはビルドごとに変える（build.py が中身から自動で書き込む）。
 // 地図タイルのキャッシュは VERSION のままにして、更新のたびに消えないようにする。
-const APP_BUILD  = 'ed807b0e';
+const APP_BUILD  = 'adb8db1b';
 const APP_CACHE  = 'gsimap-app-' + APP_BUILD;
 const TILE_CACHE = 'gsimap-tiles-' + VERSION;
 const API_CACHE  = 'gsimap-api-' + VERSION;
@@ -110,11 +110,15 @@ self.addEventListener('fetch', event => {
   }
 
   // アプリ本体：通信を優先（更新を取り込む）し、失敗したらキャッシュ
+  //
+  // cache:'no-cache' を付けて、ブラウザが持っている古い控えではなく
+  // 必ずサーバーに問い合わせる。GitHub Pages は数分〜10 分ほど古いファイルを
+  // 返す設定なので、これが無いと直したはずの画面が出てこない。
   if (url.origin === self.location.origin
       || url.hostname === 'unpkg.com'){
     event.respondWith((async () => {
       try {
-        const res = await fetch(req);
+        const res = await fetch(req, { cache:'no-cache' });
         if (res.ok){
           const cache = await caches.open(APP_CACHE);
           cache.put(req, res.clone());

@@ -1014,6 +1014,7 @@ border-radius:10px;padding:1px 8px;font-size:11px;font-family:inherit;cursor:poi
 }
 .navmode:hover{background:#f1f3f4;color:var(--text);}
 </style>
+<script>window.APP_BUILD='adb8db1b';</script>
 </head>
 <body>
 
@@ -7168,7 +7169,8 @@ const TILE_CACHE_NAME = 'gsimap-tiles-v2';   // sw.js の VERSION と合わせ�
 const MAX_DOWNLOAD_TILES = 4000;          // 一度にダウンロードする上限
 const BYTES_PER_TILE = { png:22 * 1024, jpg:48 * 1024 };
 
-const ostate = { sw:null, busy:false, cancel:false, onMove:null };
+const ostate = { sw:null, busy:false, cancel:false, onMove:null,
+                 reloading:false, pendingReload:false };
 
 /* ---------- Service Worker ---------- */
 
@@ -7216,15 +7218,60 @@ function offlineUnavailableReason(){
   return 'このブラウザはオフライン保存に対応していません。';
 }
 
+/**
+ * Service Worker を登録し、新しい版が出ていれば自動で切り替える。
+ *
+ * スマホでは強制再読み込みができないので、直したはずの画面がいつまでも
+ * 古いままになりやすい。開いたとき・戻ってきたときに新しい版が無いか確かめ、
+ * 用意ができたら読み込み直す。
+ * ナビ中やダウンロード中は、その場では読み込み直さず、終わってからにする。
+ */
 async function registerServiceWorker(){
   if (!offlineSupported()) return null;
   try {
+    const hadController = !!navigator.serviceWorker.controller;
     ostate.sw = await navigator.serviceWorker.register('sw.js', { scope:'./' });
+
+    // 初回の登録では controllerchange が必ず起きるので、そのときは読み込み直さない
+    if (hadController)
+      navigator.serviceWorker.addEventListener('controllerchange', applyUpdate);
+
+    const check = () => { try { ostate.sw.update(); } catch {} };
+    check();
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) check(); });
+    window.addEventListener('online', check);
+
     return ostate.sw;
   } catch (e){
     console.warn('Service Worker を登録できませんでした', e);
     return null;
   }
+}
+
+/** いま動いている版。公開版はビルドのたびに変わるので、更新の確認に使える */
+function appBuild(){
+  return window.APP_BUILD || '開発中';
+}
+
+/** 新しい版に切り替える。取り込み中の作業があれば、終わるまで待つ */
+function applyUpdate(){
+  if (ostate.reloading) return;
+  const busy = ostate.busy || (typeof nav !== 'undefined' && nav.active);
+  if (busy){
+    if (!ostate.pendingReload){
+      ostate.pendingReload = true;
+      toast('新しい版があります。作業が終わったら切り替わります');
+      // 手が空いたら読み込み直す
+      const wait = setInterval(() => {
+        if (ostate.busy || (typeof nav !== 'undefined' && nav.active)) return;
+        clearInterval(wait);
+        applyUpdate();
+      }, 3000);
+    }
+    return;
+  }
+  ostate.reloading = true;
+  location.reload();
 }
 
 /* ---------- ダウンロードする範囲を、地図の上で見せる ---------- */
@@ -7508,7 +7555,8 @@ async function showOfflinePanel(){
       <h2 class="p-title">オフラインで使う</h2>
       <div class="p-sub">${online ? 'オンライン' : 'オフライン'}／
         ${esc(env.name)}${env.standalone ? '（ホーム画面から起動中）' : ''}／
-        地図の保存：${supported ? '利用できます' : '利用できません'}</div>
+        地図の保存：${supported ? '利用できます' : '利用できません'}<br>
+        版 ${esc(appBuild())}</div>
 
       ${supported ? '' : `
         <div class="stalebar">${offlineUnavailableReason()}</div>

@@ -971,6 +971,16 @@ font-family:inherit;font-size:12px;font-weight:500;color:var(--text-sub);
 .savedpin{z-index:2;}
 .p-list li.drop-before{box-shadow:inset 0 3px 0 var(--blue);}
 .p-list li.drop-after{box-shadow:inset 0 -3px 0 var(--blue);}
+body.dnd .panel{touch-action:none;}
+body.dnd .fold-head,body.dnd .p-list li{user-select:none;-webkit-user-select:none;}
+.p-list li.dragging{background:#e8f0fe;}
+.drag-ghost{
+z-index:9999;pointer-events:none;
+background:#fff;border-radius:8px;
+box-shadow:0 8px 20px rgba(60,64,67,.35);
+transform:scale(1.03);opacity:.95;
+}
+.dragging{opacity:.35;}
 </style>
 </head>
 <body>
@@ -6021,30 +6031,22 @@ function reorderPlace(from, to, before){
 
 /**
  * 一覧のドラッグ操作をまとめて受ける。
- * パソコン向けの機能で、指での操作には反応しない（スマホは編集画面から変更する）。
+ *
+ *   パソコン … つかんで動かす
+ *   スマホ   … 長押ししてから動かす（すぐ動かした場合は画面のスクロール）
+ *
+ * どちらも「いまどこに落ちるか」を同じ処理で判断する。
  */
 function bindDragSort(container, onDone){
   // 一覧は描き直すたびにこの関数を通るので、受け口は 1 回だけ付ける
   // （重ねて付けると、1 回のドロップで何度も処理が走ってしまう）
-  if (container.dataset.dndBound) { istate.onDrop = onDone; return; }
+  if (container.dataset.dndBound){ istate.onDrop = onDone; return; }
   container.dataset.dndBound = '1';
   istate.onDrop = onDone;
-  let dragging = null;
 
-  container.addEventListener('dragstart', e => {
-    const el = e.target.closest('[data-drag]');
-    if (!el){ e.preventDefault(); return; }
-    dragging = { kind:el.dataset.drag, value:el.dataset.dragValue };
-    el.classList.add('dragging');
-    e.dataTransfer.effectAllowed = 'move';
-    try { e.dataTransfer.setData('text/plain', dragging.value); } catch {}
-  });
-
-  container.addEventListener('dragend', () => {
-    dragging = null;
-    container.querySelectorAll('.dragging').forEach(x => x.classList.remove('dragging'));
-    clearMarks();
-  });
+  let dragging = null;      // { kind, value, el }
+  let target = null;        // いま落とそうとしている場所
+  let ghost = null;         // 指で持ち上げているときの見た目
 
   const clearMarks = () => container
     .querySelectorAll('.drop-over,.drop-before,.drop-after')
@@ -6056,56 +6058,164 @@ function bindDragSort(container, onDone){
     return y < r.top + r.height / 2;
   };
 
-  container.addEventListener('dragover', e => {
-    if (!dragging) return;
+  function begin(el){
+    dragging = { kind:el.dataset.drag, value:el.dataset.dragValue, el };
+    el.classList.add('dragging');
+    document.body.classList.add('dnd');
+  }
+
+  function end(){
+    if (dragging) dragging.el.classList.remove('dragging');
+    document.body.classList.remove('dnd');
+    dropGhost();
+    dragging = null;
+    target = null;
+    clearMarks();
+  }
+
+  /* 指でつかんだときは、その行を持ち上げて指について来させる */
+  function liftGhost(el, x, y){
+    const r = el.getBoundingClientRect();
+    ghost = el.cloneNode(true);
+    ghost.className = (el.className + ' drag-ghost')
+      .replace('dragging', '').trim();
+    Object.assign(ghost.style, {
+      position:'fixed', left:r.left + 'px', top:r.top + 'px',
+      width:r.width + 'px', height:r.height + 'px', margin:'0',
+    });
+    ghost.dataset.dx = x - r.left;
+    ghost.dataset.dy = y - r.top;
+    document.body.appendChild(ghost);
+  }
+  function moveGhost(x, y){
+    if (!ghost) return;
+    ghost.style.left = (x - +ghost.dataset.dx) + 'px';
+    ghost.style.top  = (y - +ghost.dataset.dy) + 'px';
+  }
+  function dropGhost(){
+    if (ghost) ghost.remove();
+    ghost = null;
+  }
+
+  /** 座標から落とし先を決めて、印を付ける */
+  function markAt(x, y){
+    const el = document.elementFromPoint(x, y);
+    if (!el || !dragging){ clearMarks(); return null; }
 
     // 行の上 … 並び順を入れ替える（地点どうしのみ）
-    const row = e.target.closest('[data-drop-item]');
-    if (row && dragging.kind === 'place'){
-      if (+row.dataset.dropItem === +dragging.value) return;
-      e.preventDefault();
-      e.dataTransfer.dropEffect = 'move';
+    const row = el.closest('[data-drop-item]');
+    if (row && dragging.kind === 'place' && +row.dataset.dropItem !== +dragging.value){
       clearMarks();
-      row.classList.add(rowSide(row, e.clientY) ? 'drop-before' : 'drop-after');
-      return;
+      const before = rowSide(row, y);
+      row.classList.add(before ? 'drop-before' : 'drop-after');
+      return { type:'row', index:+row.dataset.dropItem, before };
     }
 
     // フォルダの見出しの上 … そのフォルダへ移す
-    const t = e.target.closest('[data-drop]');
-    if (!t) return;
-    const to = t.dataset.drop === '__root__' ? '' : t.dataset.drop;
-    if (dragging.kind === 'folder' && !canMoveFolder(dragging.value, to)) return;
+    const head = el.closest('[data-drop]');
+    if (head){
+      const to = head.dataset.drop === '__root__' ? '' : head.dataset.drop;
+      if (dragging.kind === 'folder' && !canMoveFolder(dragging.value, to)){
+        clearMarks(); return null;
+      }
+      clearMarks();
+      head.classList.add('drop-over');
+      return { type:'folder', to };
+    }
+    clearMarks();
+    return null;
+  }
+
+  async function apply(d, t){
+    if (!d || !t) return;
+    const done = t.type === 'row'
+      ? reorderPlace(+d.value, t.index, t.before)
+      : (d.kind === 'folder' ? await moveFolder(d.value, t.to)
+                             : movePlaceToFolder(+d.value, t.to));
+    if (done && istate.onDrop) istate.onDrop();
+  }
+
+  /* ---- パソコン ---- */
+
+  container.addEventListener('dragstart', e => {
+    const el = e.target.closest('[data-drag]');
+    if (!el){ e.preventDefault(); return; }
+    begin(el);
+    e.dataTransfer.effectAllowed = 'move';
+    try { e.dataTransfer.setData('text/plain', dragging.value); } catch {}
+  });
+
+  container.addEventListener('dragend', end);
+
+  container.addEventListener('dragover', e => {
+    if (!dragging) return;
+    target = markAt(e.clientX, e.clientY);
+    if (!target) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
-    clearMarks();
-    t.classList.add('drop-over');
   });
 
   container.addEventListener('drop', async e => {
     if (!dragging) return;
-    const d = dragging;
+    e.preventDefault();
+    const d = dragging, t = markAt(e.clientX, e.clientY);
+    end();
+    await apply(d, t);
+  });
 
-    const row = e.target.closest('[data-drop-item]');
-    if (row && d.kind === 'place'){
-      e.preventDefault();
-      dragging = null;
-      clearMarks();
-      const done = reorderPlace(+d.value, +row.dataset.dropItem, rowSide(row, e.clientY));
-      if (done && istate.onDrop) istate.onDrop();
+  /* ---- スマホ（長押ししてから動かす） ---- */
+
+  const HOLD_MS = 400;      // これだけ押し続けたら、つかんだことにする
+  const SLIP_PX = 8;        // その前にこれ以上動いたら、ふつうのスクロール
+  let hold = null, from = null;
+
+  /** 端に近づいたら一覧を自動で送る */
+  function autoScroll(y){
+    const sc = container.closest('.panel') || container;
+    const r = sc.getBoundingClientRect();
+    if (y < r.top + 56) sc.scrollTop -= 12;
+    else if (y > r.bottom - 56) sc.scrollTop += 12;
+  }
+
+  container.addEventListener('touchstart', e => {
+    if (e.touches.length !== 1) return;
+    const el = e.target.closest('[data-drag]');
+    if (!el) return;
+    if (e.target.closest('button, input, label')) return;   // ボタンはふつうに押せるように
+    const t = e.touches[0];
+    from = { x:t.clientX, y:t.clientY };
+    hold = setTimeout(() => {
+      hold = null;
+      begin(el);
+      liftGhost(el, from.x, from.y);                         // 持ち上げる
+      if (navigator.vibrate) navigator.vibrate(12);          // つかんだ合図
+    }, HOLD_MS);
+  }, { passive:true });
+
+  container.addEventListener('touchmove', e => {
+    const t = e.touches[0];
+    if (!dragging){
+      if (hold && from && Math.hypot(t.clientX - from.x, t.clientY - from.y) > SLIP_PX){
+        clearTimeout(hold); hold = null;                     // 長押し前に動いた＝スクロール
+      }
       return;
     }
+    e.preventDefault();                                      // 画面が動かないようにする
+    moveGhost(t.clientX, t.clientY);
+    target = markAt(t.clientX, t.clientY);
+    autoScroll(t.clientY);
+  }, { passive:false });
 
-    const t = e.target.closest('[data-drop]');
-    if (!t) return;
+  const touchDone = async e => {
+    if (hold){ clearTimeout(hold); hold = null; }
+    if (!dragging) return;
     e.preventDefault();
-    dragging = null;
-    clearMarks();
-    const to = t.dataset.drop === '__root__' ? '' : t.dataset.drop;
-    const done = d.kind === 'folder'
-      ? await moveFolder(d.value, to)
-      : movePlaceToFolder(+d.value, to);
-    if (done && istate.onDrop) istate.onDrop();
-  });
+    const d = dragging, t = target;
+    end();
+    await apply(d, t);
+  };
+  container.addEventListener('touchend', touchDone, { passive:false });
+  container.addEventListener('touchcancel', touchDone, { passive:false });
 }
 
 /* ---------- 編集画面 ---------- */
@@ -8063,7 +8173,7 @@ function showSaved(opts = {}){
         <ul class="p-list saved-list">
           ${items.map(p => `
             <li data-i="${p._i}" draggable="true" data-drag="place" data-drag-value="${p._i}"
-                data-drop-item="${p._i}" title="ドラッグで並べ替え・フォルダ移動ができます">
+                data-drop-item="${p._i}" title="ドラッグ（スマホは長押しから）で並べ替え・フォルダ移動ができます">
               <span class="sg-ic" style="background:${iconDef(p.icon).color}">
                 <svg viewBox="0 0 24 24" style="fill:#fff"><path d="${ICON_PATH[iconDef(p.icon).id]}"/></svg></span>
               <span class="li-txt">${esc(p.title)}<div class="li-sub">${fmtLL(p.lng,p.lat)}</div></span>

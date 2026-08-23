@@ -313,6 +313,7 @@ display:flex;align-items:center;justify-content:center;
 .zoomgroup .ctrlbtn{box-shadow:none;border-radius:0;}
 .zoomgroup .ctrlbtn:first-child{border-bottom:1px solid var(--line);}
 .compass .needle{transition:transform .1s linear;}
+.compass.headup{box-shadow:0 0 0 2px var(--blue), var(--shadow-1);}
 .layerarea{position:absolute;left:12px;bottom:24px;z-index:3;}
 .layerbtn{
 width:88px;height:88px;padding:0;border:2px solid #fff;border-radius:8px;
@@ -1122,7 +1123,9 @@ border-radius:10px;padding:1px 8px;font-size:11px;font-family:inherit;cursor:poi
   <button id="pegmanBtn" class="ctrlbtn" title="ストリートビュー (S)" aria-label="ストリートビュー">
     <svg viewBox="0 0 24 24"><circle cx="12" cy="4" r="2.4"/><path d="M15.5 8h-7A1.5 1.5 0 0 0 7 9.5V14h2v8h6v-8h2V9.5A1.5 1.5 0 0 0 15.5 8z"/></svg>
   </button>
-  <button id="compassBtn" class="ctrlbtn compass" title="北を上にする (N)" aria-label="北を上にする">
+  <!-- 押すたびに「北が上」と「進行方向が上」が入れ替わる -->
+  <button id="compassBtn" class="ctrlbtn compass" title="北が上（押すと進行方向が上になります）"
+          aria-label="北が上（押すと進行方向が上になります）">
     <svg viewBox="0 0 24 24" class="needle"><path d="M12 2 8 20l4-4 4 4z" fill="#ea4335"/><path d="M12 2 8 20l4-4z" fill="#c5221f"/></svg>
   </button>
   <button id="geoBtn" class="ctrlbtn" title="現在地 (G)" aria-label="現在地">
@@ -5042,6 +5045,8 @@ function closeGeoModal(){ $('#geoModal').classList.add('hidden'); }
  * という形にしている。
  */
 async function onGeoButton(){
+  // ナビ中は追従を切らない。押したら現在地に寄せ直すだけにする
+  if (nav.active){ setFollow(true); return; }
   if (tstate.follow){ setFollow(false); return; }      // 追従を解除するだけ
 
   const st = await geoState();
@@ -5197,6 +5202,8 @@ function animate(){
 /* ---------- 追従 ---------- */
 
 function setFollow(on){
+  // ナビ中は必ず現在地を画面の中心に置く（追従は切らない）
+  if (!on && nav.active) on = true;
   tstate.follow = on;
   updateGeoBtn();
   if (on){
@@ -5205,12 +5212,14 @@ function setFollow(on){
     if (tstate.lastFix){
       // 寄せている間は毎フレームの追従を止め、なめらかに移動させる
       tstate.recentering = true;
+      // ナビ中は利用者が決めた縮尺をそのまま使う（勝手に拡大しない）
+      const zoom = nav.active ? map.getZoom() : Math.max(map.getZoom(), 16);
       map.easeTo({ center:[tstate.lastFix.lng, tstate.lastFix.lat],
-                   zoom:Math.max(map.getZoom(), 16), duration:500 });
+                   zoom, duration:500 });
       map.once('moveend', () => { tstate.recentering = false; });
       // moveend が来ない場合でも追従が止まったままにならないようにする
       setTimeout(() => { tstate.recentering = false; }, 900);
-      if (!tstate.toldFollow){
+      if (!tstate.toldFollow && !nav.active){
         tstate.toldFollow = true;
         toast('現在地を中心に表示します。地図を動かすと解除されます', 4000);
       }
@@ -5244,10 +5253,16 @@ function toggleFollow(){ setFollow(!tstate.follow); }
  * 地図を手で動かしたら追従を解除する。
  * 移動（ドラッグ）だけでなく、拡大縮小・回転でも解除する。
  * また、指が触れている間は追従の再センタリングを止め、操作を邪魔しないようにする。
+ *
+ * ただしナビ中は解除しない。拡大縮小しても縮尺だけが変わり、
+ * 指を離せばまた現在地が画面の中心に戻る。
  */
 function bindFollowRelease(){
   // originalEvent があるものだけが利用者の操作。プログラムからの移動では外さない
-  const release = e => { if (e && e.originalEvent && tstate.follow) setFollow(false); };
+  const release = e => {
+    if (nav.active) return;
+    if (e && e.originalEvent && tstate.follow) setFollow(false);
+  };
   map.on('dragstart', release);
   map.on('zoomstart', release);
   map.on('rotatestart', release);
@@ -5302,18 +5317,24 @@ function startCompass(){
   window.addEventListener('deviceorientation', onOrient, true);
 }
 
+/** 「北が上」と「進行方向が上」を入れ替える（方位マーク・ナビバーの両方から呼ぶ） */
 async function toggleHeadingUp(){
   if (!cstate.headingUp){
-    if (cstate.raw == null && !(await requestCompass())) return;
+    if (cstate.raw == null && !(await requestCompass())){
+      // 方位センサーが使えない端末では、せめて北向きに戻す
+      map.easeTo({ bearing:0, pitch:0, duration:400 });
+      return;
+    }
     cstate.headingUp = true;
     startAnimation();
-    toast('向いている方向が上になるように地図を回します', 4000);
+    toast('進行方向が上になります');
   } else {
     cstate.headingUp = false;
-    map.easeTo({ bearing:0, duration:400 });
-    toast('地図の向きを北に戻しました');
+    map.easeTo({ bearing:0, pitch:0, duration:400 });
+    toast('北が上になります');
   }
   updateTrackBar();
+  updateCompass();
 }
 
 /* ---------- ルートナビ ---------- */
@@ -9521,7 +9542,8 @@ function bindUI(){
   $('#zoomIn').onclick  = () => map.zoomIn({ duration:250 });
   $('#zoomOut').onclick = () => map.zoomOut({ duration:250 });
   // #geoBtn の動作は bindTrackUI（追従の切り替え）で設定する
-  $('#compassBtn').onclick = () => map.easeTo({ bearing:0, pitch:0, duration:400 });
+  // 方位マークを押すたびに「北が上」と「進行方向が上」を入れ替える
+  $('#compassBtn').onclick = () => toggleHeadingUp();
 
   /* --- レイヤ --- */
   $('#layerBtn').onclick = e => {
@@ -9686,7 +9708,7 @@ function showHelp(){
       <div class="p-row"><svg viewBox="0 0 24 24"><path d="M20 5H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zM11 8h2v2h-2zM8 8h2v2H8zM5 8h2v2H5zm3 3h8v2H8zm-3 0h2v2H5zm11 0h3v2h-3zm-2-3h2v2h-2zm3 0h2v2h-2zM5 14h14v2H5z"/></svg>
         <div><div class="k">キーボード</div><div class="v">
           <kbd>/</kbd> 検索　<kbd>G</kbd> 現在地　<kbd>L</kbd> レイヤ　<kbd>R</kbd> ルート作成<br>
-          <kbd>S</kbd> ストリートビュー　<kbd>N</kbd> 北を上に　<kbd>+</kbd>/<kbd>-</kbd> 拡大縮小　<kbd>Esc</kbd> 解除
+          <kbd>S</kbd> ストリートビュー　<kbd>N</kbd> 北を上に／進行方向を上に　<kbd>+</kbd>/<kbd>-</kbd> 拡大縮小　<kbd>Esc</kbd> 解除
         </div></div></div>
       <div class="p-row"><svg viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75z"/></svg>
         <div><div class="k">ルート作成</div><div class="v">
@@ -9761,8 +9783,17 @@ function bindMapEvents(){
 }
 
 function updateCompass(){
-  const n = $('#compassBtn .needle');
+  const btn = $('#compassBtn');
+  if (!btn) return;
+  const n = btn.querySelector('.needle');
   if (n) n.style.transform = `rotate(${-map.getBearing()}deg)`;
+
+  // いまどちらの向きで見ているかを、ボタンの見た目と説明で示す
+  const up = typeof cstate !== 'undefined' && cstate.headingUp;
+  btn.classList.toggle('headup', !!up);
+  btn.title = up ? '進行方向が上（押すと北が上に戻ります）'
+                 : '北が上（押すと進行方向が上になります）';
+  btn.setAttribute('aria-label', btn.title);
 }
 
 /* ---------- キーボード ---------- */
@@ -9789,7 +9820,11 @@ function bindKeyboard(){
       case 'l': $('#layerBtn').click(); break;
       case 'r': rstate.active ? stopRouteDraw() : startRouteDraw(); break;
       case 's': toggleStreetViewPick(); break;
-      case 'n': map.easeTo({ bearing:0, pitch:0, duration:400 }); break;
+      // 進行方向を上にしている最中なら、それを解いてから北へ戻す
+      case 'n':
+        if (cstate.headingUp) toggleHeadingUp();
+        else map.easeTo({ bearing:0, pitch:0, duration:400 });
+        break;
     }
   });
 }

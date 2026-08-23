@@ -955,6 +955,20 @@ background:#e8f0fe;border-radius:6px;
 box-shadow:inset 0 0 0 2px var(--blue);
 }
 .p-list li.sel{background:#e8f0fe;}
+.fold-open{
+display:flex;align-items:center;gap:6px;flex:1;min-width:0;
+border:0;background:transparent;padding:2px 0;cursor:pointer;
+font-family:inherit;font-size:12px;font-weight:500;color:var(--text-sub);
+}
+.fold-open:disabled{cursor:default;}
+.fold-open .chev{width:14px;height:14px;fill:currentColor;flex:none;transition:transform .15s;}
+.fold-head.open .fold-open .chev{transform:rotate(90deg);}
+.fold-open:disabled .chev{opacity:.25;}
+.fold-open .fold-ic{width:16px;height:16px;fill:currentColor;flex:none;}
+.fold-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.fold-open .fold-n{margin-left:auto;}
+.pin{z-index:1;}
+.savedpin{z-index:2;}
 </style>
 </head>
 <body>
@@ -4344,7 +4358,9 @@ function fmtWhen(iso){
                                                     hour:'2-digit', minute:'2-digit' });
 }
 
-async function showSavedRoutes(){
+async function showSavedRoutes(opts = {}){
+  istate.list = 'routes';
+  if (opts.fresh) collapseAllFolders();
   const signedIn = isSignedIn();
   const local = localRoutes();
 
@@ -4359,11 +4375,9 @@ async function showSavedRoutes(){
       <div id="driveRoutes">${signedIn ? '<div class="p-empty">読み込み中…</div>' : ''}</div>
       ${local.length ? `
         <div class="p-sec-title">この端末に保存したルート</div>
-        ${groupByFolder(local.map((r,i) => ({ ...r, title:r.name, _i:i }))).map(g => `
-          ${folderHead(g)}
-          ${g.items.length ? `
+        ${folderTreeHtml(groupByFolder(local.map((r,i) => ({ ...r, title:r.name, _i:i }))), list => `
           <ul class="p-list local-list">
-            ${g.items.map(r => `
+            ${list.map(r => `
               <li data-i="${r._i}">
                 <span class="sg-ic"><svg viewBox="0 0 24 24"><path d="M17 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V7l-4-4zm-5 16a3 3 0 1 1 0-6 3 3 0 0 1 0 6zm3-10H6V5h9v4z"/></svg></span>
                 <span class="li-txt">${esc(r.name)}<div class="li-sub">${fmtWhen(r.savedAt)}</div></span>
@@ -4371,7 +4385,7 @@ async function showSavedRoutes(){
                   <svg viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75z"/></svg>
                 </button>
               </li>`).join('')}
-          </ul>` : ''}`).join('')}` : ''}
+          </ul>`)}` : ''}
     </div>`);
 
   const loginBtn = $('#routeLoginBtn');
@@ -4406,11 +4420,9 @@ async function showSavedRoutes(){
   istate.routeFolders = [...new Set(items.map(i => i.folder).filter(Boolean))];
   const groups = groupByFolder(items);
 
-  box.innerHTML = items.length ? groups.map(g => `
-    ${folderHead(g)}
-    ${g.items.length ? `
+  box.innerHTML = items.length ? folderTreeHtml(groups, list => `
     <ul class="p-list drive-list">
-      ${g.items.map(f => `
+      ${list.map(f => `
         <li data-id="${esc(f.id)}" data-name="${esc(f.name)}" data-folder="${esc(f.folder)}">
           <span class="sg-ic"><svg viewBox="0 0 24 24"><path d="M7.7 3 1.2 14.3l3.2 5.6L11 8.6 7.7 3zm1.6 0 6.5 11.3H22L15.5 3H9.3zM6.1 21h13l3.2-5.6H9.3L6.1 21z"/></svg></span>
           <span class="li-txt">${esc(f.name)}<div class="li-sub">${fmtWhen(f.when)}</div></span>
@@ -4418,7 +4430,7 @@ async function showSavedRoutes(){
             <svg viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75z"/></svg>
           </button>
         </li>`).join('')}
-    </ul>` : '<div class="p-empty" style="padding:2px 0 10px">（空のフォルダ）</div>'}`).join('')
+    </ul>`)
     : `<div class="p-empty">「${esc(DRIVE_FOLDER)}」フォルダにはまだルートがありません。<br>
         ルート作成バーの「保存」から保存できます。</div>`;
 
@@ -5781,7 +5793,78 @@ function toggleFolderHidden(path){
 const istate = {
   routeFolders: [],     // ルート側で使われているフォルダ名（一覧を作るときに更新する）
   target: null,         // いま編集しているもの
+  open: new Set(),      // 中身を開いているフォルダ
+  list: 'places',       // いま出している一覧（'places' か 'routes'）
 };
+
+/** 一覧を開き直すとき用。1 階層目だけが見えている状態に戻す */
+function collapseAllFolders(){ istate.open = new Set(); }
+
+/**
+ * いま出している一覧を作り直す。
+ * 折りたたんでいると中身の要素が無く、画面から見分けられないので、
+ * どちらを出しているかを覚えておいて使う。
+ */
+function refreshItemList(){
+  if (istate.list === 'routes') showSavedRoutes();
+  else showSaved();
+}
+
+
+/* ---------- 折りたたみできる階層表示 ---------- */
+
+/** groups（[{folder, items}]）を木の形に組み直す */
+function buildFolderTree(groups){
+  const rootNode = { path:'', name:NO_FOLDER, items:[], children:new Map() };
+  const node = path => {
+    if (!path) return rootNode;
+    let cur = '', n = rootNode;
+    for (const part of folderParts(path)){
+      cur = cur ? cur + FOLDER_SEP + part : part;
+      if (!n.children.has(part))
+        n.children.set(part, { path:cur, name:part, items:[], children:new Map() });
+      n = n.children.get(part);
+    }
+    return n;
+  };
+  for (const g of groups) node(g.folder).items = g.items;
+  return rootNode;
+}
+
+/** そのフォルダと、その下すべての件数 */
+function subtreeCount(node){
+  return node.items.length
+       + [...node.children.values()].reduce((t, c) => t + subtreeCount(c), 0);
+}
+
+const sortedChildren = node =>
+  [...node.children.values()].sort((a, b) => a.name.localeCompare(b.name, 'ja'));
+
+/**
+ * 折りたたみできる一覧をつくる。
+ * 最初は 1 階層目のフォルダだけが見えていて、押すと中身が開く。
+ */
+function folderTreeHtml(groups, renderItems){
+  const tree = buildFolderTree(groups);
+
+  const walk = node => {
+    const kids = sortedChildren(node);
+    const open = istate.open.has(node.path);
+    const has = kids.length || node.items.length;
+    return folderHead(node, { open, has, count:subtreeCount(node) })
+      + (open
+          ? kids.map(walk).join('') + (node.items.length ? renderItems(node.items) : '')
+          : '');
+  };
+
+  // 1 階層目のフォルダ → 最後に「未分類」
+  const top = sortedChildren(tree).map(walk).join('');
+  const rootOpen = istate.open.has('');
+  const rootPart = folderHead(tree, { open:rootOpen, has:tree.items.length,
+                                      count:tree.items.length })
+    + (rootOpen && tree.items.length ? renderItems(tree.items) : '');
+  return top + rootPart;
+}
 
 /** フォルダごとにまとめる。[{ folder, items:[...] }] を階層の順で返す */
 function groupByFolder(items){
@@ -5803,31 +5886,36 @@ function groupByFolder(items){
 
 /**
  * フォルダの見出し。
- * 階層に応じて字下げし、地図に出すかどうかのチェックを付ける。
- * 中身が無いフォルダは、その場で消せる。
+ *   - 押すと中身を開く／閉じる
+ *   - 階層に応じて字下げする
+ *   - 地図に出すかどうかのチェックを付ける
+ *   - 中身が無いフォルダは、その場で消せる
  */
-function folderHead(g){
-  const path = g.folder;
+function folderHead(node, st){
+  const path = node.path;
   const depth = folderDepth(path);
-  const name = path ? folderName(path) : NO_FOLDER;
-  const empty = g.items.length === 0 && path;
+  const name = path ? node.name : NO_FOLDER;
+  const empty = st.count === 0 && path;
   const hidden = path ? hiddenFolders().has(path) : false;
   const dimmed = path && folderHidden(path);
-  return `<div class="fold-head${dimmed ? ' off' : ''}"
+  return `<div class="fold-head${dimmed ? ' off' : ''}${st.open ? ' open' : ''}"
        style="padding-left:${Math.max(0, depth - 1) * 14}px"
        ${path ? `draggable="true" data-drag="folder" data-drag-value="${esc(path)}"` : ''}
-       data-drop="${path ? esc(path) : '__root__'}"
-       title="${path ? 'ドラッグでほかのフォルダへ移せます' : 'ここへドラッグするといちばん上に移ります'}">
+       data-drop="${path ? esc(path) : '__root__'}">
     ${path ? `<label class="fold-show" title="地図に表示する">
         <input type="checkbox" data-showfolder="${esc(path)}"${hidden ? '' : ' checked'}>
       </label>` : '<span class="fold-spacer"></span>'}
-    <svg viewBox="0 0 24 24"><path d="M10 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-2z"/></svg>
-    ${esc(name)}<span class="fold-n">${g.items.length}</span>
+    <button class="fold-open" data-openfolder="${path ? esc(path) : '__root__'}"
+            title="${st.open ? '閉じる' : '開く'}"${st.has ? '' : ' disabled'}>
+      <svg class="chev" viewBox="0 0 24 24"><path d="M10 17l5-5-5-5z"/></svg>
+      <svg class="fold-ic" viewBox="0 0 24 24"><path d="M10 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-2z"/></svg>
+      <span class="fold-name">${esc(name)}</span>
+      <span class="fold-n">${st.count}</span>
+    </button>
     ${empty ? `<button class="iconbtn small fold-del" data-delfolder="${esc(path)}"
         title="この空のフォルダを消す"><svg viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg></button>` : ''}
   </div>`;
 }
-
 
 /* ---------- ドラッグでの並べ替え ---------- */
 
@@ -6039,16 +6127,23 @@ function bindItemsUI(){
     if (!c) return;
     toggleFolderHidden(c.dataset.showfolder);
     renderPlacePins();
-    showSaved();
+    refreshItemList();
   });
 
   document.addEventListener('click', e => {
+    const o = e.target.closest('[data-openfolder]');
+    if (o){
+      const path = o.dataset.openfolder === '__root__' ? '' : o.dataset.openfolder;
+      if (istate.open.has(path)) istate.open.delete(path);
+      else istate.open.add(path);
+      refreshItemList();
+      return;
+    }
     const b = e.target.closest('[data-delfolder]');
     if (!b) return;
     forgetFolder(b.dataset.delfolder);
     toast(`フォルダ「${b.dataset.delfolder}」を消しました`);
-    if (document.querySelector('.saved-list') || document.querySelector('#savedLogin')) showSaved();
-    else showSavedRoutes();
+    refreshItemList();
   });
 
   $('#itemCancel').onclick = closeItemEditor;
@@ -7882,6 +7977,8 @@ function rememberLastFolder(f){
 }
 
 function showSaved(opts = {}){
+  istate.list = 'places';
+  if (opts.fresh) collapseAllFolders();     // 開き直したときは 1 階層目だけにする
   const signed = isSignedIn();
   const status = opts.syncing
     ? 'Google ドライブと同期中…'
@@ -7902,11 +7999,9 @@ function showSaved(opts = {}){
         <button class="btn primary" id="savedLogin" style="margin:2px 0 12px">
           Google にログインして端末間で共有
         </button>`}
-      ${state.saved.length ? groups.map(g => `
-        ${folderHead(g)}
-        ${g.items.length ? `
+      ${state.saved.length ? folderTreeHtml(groups, items => `
         <ul class="p-list saved-list">
-          ${g.items.map(p => `
+          ${items.map(p => `
             <li data-i="${p._i}" draggable="true" data-drag="place" data-drag-value="${p._i}">
               <span class="sg-ic" style="background:${iconDef(p.icon).color}">
                 <svg viewBox="0 0 24 24" style="fill:#fff"><path d="${ICON_PATH[iconDef(p.icon).id]}"/></svg></span>
@@ -7915,7 +8010,7 @@ function showSaved(opts = {}){
                 <svg viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75z"/></svg>
               </button>
             </li>`).join('')}
-        </ul>` : '<div class="p-empty" style="padding:2px 0 10px">（空のフォルダ）</div>'}`).join('')
+        </ul>`)
       : `<div class="p-empty">まだ保存された場所はありません。地図を右クリック、または場所の詳細から「保存」できます。</div>`}
       ${signed ? `<div class="p-empty">保存先：マイドライブ ＞ MAP TOOL ＞ places.json</div>` : ''}
     </div>`);
@@ -8655,8 +8750,8 @@ function showMenu(){
   $('.p-menu').addEventListener('click', e => {
     const li = e.target.closest('li'); if (!li) return;
     switch (li.dataset.act){
-      case 'saved':   showSaved(); break;
-      case 'routes':  showSavedRoutes(); break;
+      case 'saved':   showSaved({ fresh:true }); break;
+      case 'routes':  showSavedRoutes({ fresh:true }); break;
       case 'account': showAccountPanel(); break;
       case 'offline': showOfflinePanel(); break;
       case 'draw':  closePanel(); startRouteDraw(); break;

@@ -969,6 +969,8 @@ font-family:inherit;font-size:12px;font-weight:500;color:var(--text-sub);
 .fold-open .fold-n{margin-left:auto;}
 .pin{z-index:1;}
 .savedpin{z-index:2;}
+.p-list li.drop-before{box-shadow:inset 0 3px 0 var(--blue);}
+.p-list li.drop-after{box-shadow:inset 0 -3px 0 var(--blue);}
 </style>
 </head>
 <body>
@@ -5996,11 +5998,37 @@ function movePlaceToFolder(i, folder){
   return true;
 }
 
+
+/**
+ * 地点の並び順を入れ替える。
+ * 落とした先が別のフォルダなら、そのフォルダへ移りつつ並ぶ。
+ */
+function reorderPlace(from, to, before){
+  const arr = state.saved;
+  const item = arr[from], target = arr[to];
+  if (!item || !target || item === target) return false;
+
+  item.folder = target.folder || '';
+  arr.splice(from, 1);
+  const at = arr.indexOf(target);
+  arr.splice(before ? at : at + 1, 0, item);
+
+  persistSaved();
+  renderPlacePins();
+  if (isSignedIn()) pushPlacesQuietly();
+  return true;
+}
+
 /**
  * 一覧のドラッグ操作をまとめて受ける。
  * パソコン向けの機能で、指での操作には反応しない（スマホは編集画面から変更する）。
  */
 function bindDragSort(container, onDone){
+  // 一覧は描き直すたびにこの関数を通るので、受け口は 1 回だけ付ける
+  // （重ねて付けると、1 回のドロップで何度も処理が走ってしまう）
+  if (container.dataset.dndBound) { istate.onDrop = onDone; return; }
+  container.dataset.dndBound = '1';
+  istate.onDrop = onDone;
   let dragging = null;
 
   container.addEventListener('dragstart', e => {
@@ -6014,37 +6042,69 @@ function bindDragSort(container, onDone){
 
   container.addEventListener('dragend', () => {
     dragging = null;
-    container.querySelectorAll('.dragging,.drop-over')
-      .forEach(x => x.classList.remove('dragging', 'drop-over'));
+    container.querySelectorAll('.dragging').forEach(x => x.classList.remove('dragging'));
+    clearMarks();
   });
 
-  const dropTarget = e => e.target.closest('[data-drop]');
+  const clearMarks = () => container
+    .querySelectorAll('.drop-over,.drop-before,.drop-after')
+    .forEach(x => x.classList.remove('drop-over', 'drop-before', 'drop-after'));
+
+  /** 行の上半分なら手前、下半分なら後ろに入れる */
+  const rowSide = (el, y) => {
+    const r = el.getBoundingClientRect();
+    return y < r.top + r.height / 2;
+  };
 
   container.addEventListener('dragover', e => {
-    const t = dropTarget(e);
-    if (!t || !dragging) return;
+    if (!dragging) return;
+
+    // 行の上 … 並び順を入れ替える（地点どうしのみ）
+    const row = e.target.closest('[data-drop-item]');
+    if (row && dragging.kind === 'place'){
+      if (+row.dataset.dropItem === +dragging.value) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      clearMarks();
+      row.classList.add(rowSide(row, e.clientY) ? 'drop-before' : 'drop-after');
+      return;
+    }
+
+    // フォルダの見出しの上 … そのフォルダへ移す
+    const t = e.target.closest('[data-drop]');
+    if (!t) return;
     const to = t.dataset.drop === '__root__' ? '' : t.dataset.drop;
-    const ok = dragging.kind === 'folder'
-      ? canMoveFolder(dragging.value, to)
-      : true;
-    if (!ok) return;
+    if (dragging.kind === 'folder' && !canMoveFolder(dragging.value, to)) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
-    container.querySelectorAll('.drop-over').forEach(x => x.classList.remove('drop-over'));
+    clearMarks();
     t.classList.add('drop-over');
   });
 
   container.addEventListener('drop', async e => {
-    const t = dropTarget(e);
-    if (!t || !dragging) return;
-    e.preventDefault();
-    const to = t.dataset.drop === '__root__' ? '' : t.dataset.drop;
+    if (!dragging) return;
     const d = dragging;
+
+    const row = e.target.closest('[data-drop-item]');
+    if (row && d.kind === 'place'){
+      e.preventDefault();
+      dragging = null;
+      clearMarks();
+      const done = reorderPlace(+d.value, +row.dataset.dropItem, rowSide(row, e.clientY));
+      if (done && istate.onDrop) istate.onDrop();
+      return;
+    }
+
+    const t = e.target.closest('[data-drop]');
+    if (!t) return;
+    e.preventDefault();
     dragging = null;
+    clearMarks();
+    const to = t.dataset.drop === '__root__' ? '' : t.dataset.drop;
     const done = d.kind === 'folder'
       ? await moveFolder(d.value, to)
       : movePlaceToFolder(+d.value, to);
-    if (done && onDone) onDone();
+    if (done && istate.onDrop) istate.onDrop();
   });
 }
 
@@ -8002,7 +8062,8 @@ function showSaved(opts = {}){
       ${state.saved.length ? folderTreeHtml(groups, items => `
         <ul class="p-list saved-list">
           ${items.map(p => `
-            <li data-i="${p._i}" draggable="true" data-drag="place" data-drag-value="${p._i}">
+            <li data-i="${p._i}" draggable="true" data-drag="place" data-drag-value="${p._i}"
+                data-drop-item="${p._i}" title="ドラッグで並べ替え・フォルダ移動ができます">
               <span class="sg-ic" style="background:${iconDef(p.icon).color}">
                 <svg viewBox="0 0 24 24" style="fill:#fff"><path d="${ICON_PATH[iconDef(p.icon).id]}"/></svg></span>
               <span class="li-txt">${esc(p.title)}<div class="li-sub">${fmtLL(p.lng,p.lat)}</div></span>

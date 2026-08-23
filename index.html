@@ -1664,6 +1664,8 @@ function toggleStreetViewPick(on){
   gstate.pickMode = on === undefined ? !gstate.pickMode : on;
   $('#pegmanBtn').classList.toggle('active', gstate.pickMode);
   map.getCanvas().style.cursor = gstate.pickMode ? 'crosshair' : '';
+  // ストリートビューのある道を水色で示す（押している間だけ）
+  if (typeof setSvCoverage === 'function') setSvCoverage(gstate.pickMode);
   if (gstate.pickMode)
     toast(hasApiKey()
       ? 'ストリートビューを見たい場所を地図上でクリックしてください'
@@ -6363,6 +6365,209 @@ function bindItemsUI(){
 <script>
 'use strict';
 
+const SV_MIN_ZOOM   = 14;      // これより広いと道路が多すぎるので調べない
+const SV_CHUNK_M    = 60;      // 道路をこの長さに切って、1 区間ずつ調べる
+const SV_MAX_CHUNKS = 300;     // 1 回に調べる区間の上限
+const SV_RADIUS_M   = 45;      // この距離までにパノラマがあれば「あり」とする
+const SV_PARALLEL   = 8;       // 同時に投げる問い合わせの数
+
+const svs = {
+  on: false,
+  busy: false,
+  cache: new Map(),            // 「緯度,経度」→ true / false
+  token: 0,                    // 途中でやめたときの見分け用
+};
+
+/* ---------- 道路の形をもらう ---------- */
+
+/**
+ * 画面内の道路を取り出す。
+ * 見えない線からは取り出せないので、透明な線として一時的に出してから拾う。
+ */
+async function svRoads(){
+  const ID = 'gsi-road-probe';
+  if (!map.getLayer(ID)) return [];
+
+  map.setLayoutProperty(ID, 'visibility', 'visible');
+  // タイルが届くまで待つ（届かなくても先に進む）
+  await new Promise(res => {
+    let done = false;
+    const fin = () => { if (!done){ done = true; res(); } };
+    map.once('idle', fin);
+    setTimeout(fin, 4000);
+  });
+
+  const feats = map.queryRenderedFeatures({ layers:[ID] });
+  map.setLayoutProperty(ID, 'visibility', 'none');
+
+  const lines = [];
+  const seen = new Set();
+  for (const f of feats){
+    const g = f.geometry;
+    const parts = g.type === 'LineString' ? [g.coordinates]
+                : g.type === 'MultiLineString' ? g.coordinates : [];
+    for (const line of parts){
+      if (line.length < 2) continue;
+      const key = line[0].join(',') + '|' + line[line.length-1].join(',') + '|' + line.length;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      lines.push(line);
+    }
+  }
+  return lines;
+}
+
+/** 道路を SV_CHUNK_M ずつの区間に切る */
+function svChunks(lines){
+  const out = [];
+  for (const line of lines){
+    let cur = [line[0]], acc = 0;
+    for (let i = 1; i < line.length; i++){
+      const d = haversine(line[i-1], line[i]);
+      cur.push(line[i]);
+      acc += d;
+      if (acc >= SV_CHUNK_M){
+        out.push(cur);
+        cur = [line[i]];
+        acc = 0;
+      }
+    }
+    if (cur.length >= 2) out.push(cur);
+  }
+  return out;
+}
+
+/** 区間の中ほどの地点 */
+function svMidpoint(chunk){
+  const total = chunk.reduce((t, p, i) => i ? t + haversine(chunk[i-1], p) : 0, 0);
+  let acc = 0;
+  for (let i = 1; i < chunk.length; i++){
+    const d = haversine(chunk[i-1], chunk[i]);
+    if (acc + d >= total / 2){
+      const t = d ? (total / 2 - acc) / d : 0;
+      return [ chunk[i-1][0] + (chunk[i][0] - chunk[i-1][0]) * t,
+               chunk[i-1][1] + (chunk[i][1] - chunk[i-1][1]) * t ];
+    }
+    acc += d;
+  }
+  return chunk[0];
+}
+
+/* ---------- パノラマがあるかを尋ねる ---------- */
+
+const svKey = p => `${p[1].toFixed(4)},${p[0].toFixed(4)}`;
+
+async function svHasPanorama(p){
+  const k = svKey(p);
+  if (svs.cache.has(k)) return svs.cache.get(k);
+  const url = 'https://maps.googleapis.com/maps/api/streetview/metadata'
+            + `?location=${p[1]},${p[0]}&radius=${SV_RADIUS_M}&source=outdoor`
+            + `&key=${encodeURIComponent(getApiKey())}`;
+  try {
+    const r = await fetch(url);
+    const j = await r.json();
+    if (j.status === 'REQUEST_DENIED' || j.status === 'OVER_QUERY_LIMIT')
+      throw new Error(j.error_message || j.status);
+    const ok = j.status === 'OK';
+    svs.cache.set(k, ok);
+    return ok;
+  } catch (e){
+    if (/REQUEST_DENIED|OVER_QUERY_LIMIT/.test(e.message)) throw e;
+    return false;                     // 一時的な失敗は「なし」として続ける
+  }
+}
+
+/* ---------- 本体 ---------- */
+
+function svSetData(features){
+  const src = map.getSource('sv-cover');
+  if (src) src.setData({ type:'FeatureCollection', features });
+}
+
+function svClear(){
+  svs.token++;                        // 走っている処理を打ち切る
+  svs.busy = false;
+  svSetData([]);
+  if (map.getLayer('sv-cover-line'))
+    map.setLayoutProperty('sv-cover-line', 'visibility', 'none');
+}
+
+/**
+ * 画面内のストリートビューの範囲を調べて水色で描く。
+ * 人型のボタンを押したときに呼ばれる。
+ */
+async function svScan(){
+  if (!hasApiKey()){
+    toast('ストリートビューのある範囲を色分けするには、Google Maps API キーが必要です'
+        + '（左下「レイヤ」→「API キーを設定」）。'
+        + 'キーが無くても、地点を選べばストリートビューは開けます', 10000);
+    return;
+  }
+  if (map.getZoom() < SV_MIN_ZOOM){
+    toast(`ズーム ${SV_MIN_ZOOM} 以上に拡大すると、`
+        + 'ストリートビューのある道を水色で表示します', 6000);
+    return;
+  }
+  if (svs.busy) return;
+
+  const my = ++svs.token;
+  svs.busy = true;
+  map.setLayoutProperty('sv-cover-line', 'visibility', 'visible');
+  toast('ストリートビューのある道を調べています…', 4000);
+
+  try {
+    const chunks = svChunks(await svRoads());
+    if (my !== svs.token) return;
+    if (!chunks.length){
+      toast('この範囲には道路のデータがありません', 5000);
+      return;
+    }
+
+    const list = chunks.slice(0, SV_MAX_CHUNKS);
+    const cut = chunks.length > SV_MAX_CHUNKS;
+
+    const found = [];
+    let done = 0;
+    // 同時に投げすぎないよう、少しずつ進める
+    for (let i = 0; i < list.length; i += SV_PARALLEL){
+      if (my !== svs.token) return;
+      const part = list.slice(i, i + SV_PARALLEL);
+      const oks = await Promise.all(part.map(c => svHasPanorama(svMidpoint(c))));
+      part.forEach((c, j) => {
+        if (oks[j]) found.push({ type:'Feature', properties:{},
+                                 geometry:{ type:'LineString', coordinates:c } });
+      });
+      done += part.length;
+      svSetData(found);                                  // 少しずつ描いていく
+      const hint = $('#svCoverHint');
+      if (hint) hint.textContent = `調べています… ${done} / ${list.length}`;
+    }
+
+    if (my !== svs.token) return;
+    toast(found.length
+      ? `ストリートビューのある道を ${found.length} 区間表示しました`
+        + (cut ? `（多いため ${SV_MAX_CHUNKS} 区間まで。拡大すると残りも調べます）` : '')
+      : 'この範囲にストリートビューのある道は見つかりませんでした', 7000);
+  } catch (e){
+    svClear();
+    toast('調べられませんでした：' + e.message
+        + '（API キーで Street View Static API が有効になっているかご確認ください）', 10000);
+  } finally {
+    if (my === svs.token) svs.busy = false;
+  }
+}
+
+/** 人型ボタンの入り切りに合わせる */
+function setSvCoverage(on){
+  svs.on = on;
+  if (on) svScan();
+  else svClear();
+}
+
+</script>
+<script>
+'use strict';
+
 // 公開サーバは混み合って 504 を返すことがあるので、順に試す
 const OVERPASS_URLS = [
   'https://overpass-api.de/api/interpreter',
@@ -7199,12 +7404,21 @@ function buildStyle(){
   sources.draw       = { type:'geojson', data:EMPTY_FC };   // 手描きルート
   sources['osm-paths']  = { type:'geojson', data:EMPTY_FC }; // OSM の登山道
   sources['osm-routes'] = { type:'geojson', data:EMPTY_FC }; // OSM の登山ルート（まとまり）
+  sources['sv-cover']   = { type:'geojson', data:EMPTY_FC }; // ストリートビューのある道
 
   layers.push(
     { id:'accuracy-fill', type:'fill', source:'accuracy',
       paint:{ 'fill-color':'#4285f4', 'fill-opacity':0.15 } },
     { id:'accuracy-line', type:'line', source:'accuracy',
       paint:{ 'line-color':'#4285f4', 'line-opacity':0.35, 'line-width':1 } },
+    // ストリートビューのある道（水色。ほかの線より下に敷く）
+    { id:'sv-cover-line', type:'line', source:'sv-cover',
+      layout:{ 'line-cap':'round', 'line-join':'round', visibility:'none' },
+      paint:{ 'line-color':'#4fc3f7', 'line-opacity':0.9,
+              'line-width':['interpolate',['linear'],['zoom'],13,3,18,8] } },
+    // 画面内の道路の形をもらうための線（透明。押したときだけ出す）
+    { id:'gsi-road-probe', type:'line', source:'gsi-vector', 'source-layer':'road',
+      minzoom:13, layout:{ visibility:'none' }, paint:{ 'line-opacity':0, 'line-width':12 } },
     // OSM の登山ルート（まとまり）＝ 薄い赤の帯
     { id:'osm-routes-line', type:'line', source:'osm-routes',
       layout:{ 'line-cap':'round', 'line-join':'round', visibility:'none' },

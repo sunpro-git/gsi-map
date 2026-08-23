@@ -3892,6 +3892,7 @@ async function driveSignIn(){
           if (after !== before)
             toast(`保存した場所を同期しました（${before} 件 → ${after} 件）`, 5000);
           await syncSettings();
+          await syncRoutes({ quiet:true });
         } catch (e){
           if (e.message !== 'SIGNED_OUT') toast('保存した場所の同期に失敗しました：' + e.message, 5000);
         }
@@ -4287,20 +4288,121 @@ async function syncSettings(){
 
 /* ---------- この端末への保存（ログインしない場合のフォールバック） ---------- */
 
+
+/* ---------- 端末の保存容量 ---------- */
+
+const STORAGE_WARN = 0.8;        // 使用率がこれを超えたら知らせる
+let storageWarned = false;
+
+/** 残り容量を確かめる。少なければ一度だけ知らせる */
+async function checkStorage(){
+  if (!navigator.storage || !navigator.storage.estimate) return null;
+  let est;
+  try { est = await navigator.storage.estimate(); } catch { return null; }
+  if (!est || !est.quota) return null;
+  const ratio = est.usage / est.quota;
+  if (ratio > STORAGE_WARN && !storageWarned){
+    storageWarned = true;
+    const mb = v => (v / 1048576).toFixed(1) + ' MB';
+    toast(`この端末の保存容量が残りわずかです（${mb(est.usage)} / ${mb(est.quota)}）。`
+        + '古いルートやオフライン地図を減らしてください', 4000);
+  }
+  return est;
+}
+
+/** 保存に失敗したときの共通処理 */
+function storageFull(){
+  toast('この端末の保存容量がいっぱいです。'
+      + '古いルートやオフライン地図を減らしてください', 4000);
+}
+
 function localRoutes(){
   try { return JSON.parse(localStorage.getItem(LOCAL_ROUTES) || '[]'); } catch { return []; }
 }
-function saveLocalRoute(name, gpx){
+function saveLocalRoute(name, gpx, extra){
   const list = localRoutes().filter(r => r.name !== name);
-  list.unshift({ name, gpx, savedAt:new Date().toISOString() });
-  try { localStorage.setItem(LOCAL_ROUTES, JSON.stringify(list)); }
-  catch { throw new Error('この端末の保存領域が一杯です'); }
+  list.unshift({ name, gpx, savedAt:new Date().toISOString(), ...(extra || {}) });
+  if (!saveLocalRoutes(list)) throw new Error('この端末の保存領域が一杯です');
 }
 function saveLocalRoutes(list){
-  try { localStorage.setItem(LOCAL_ROUTES, JSON.stringify(list)); } catch {}
+  try {
+    localStorage.setItem(LOCAL_ROUTES, JSON.stringify(list));
+    checkStorage();
+    return true;
+  } catch {
+    storageFull();
+    return false;
+  }
 }
 function deleteLocalRoute(name){
   try { localStorage.setItem(LOCAL_ROUTES, JSON.stringify(localRoutes().filter(r => r.name !== name))); } catch {}
+}
+
+
+/* ---------- ドライブと端末をそろえる ----------
+ *
+ *  ねらい：オンラインで保存したルートを、オフラインでもどの端末でも開けるようにする。
+ *
+ *   - ドライブにあって端末に無い（または内容が古い）ものを取り込む
+ *   - 端末だけにあるものをドライブへ上げる
+ *   - 変わっていないものは触らない（更新日時で判断）
+ */
+
+async function syncRoutes(opts = {}){
+  if (!isSignedIn() || !navigator.onLine) return null;
+
+  let files;
+  try { files = await driveList(); }
+  catch { return null; }
+
+  const local = localRoutes();
+  const byId = new Map(local.filter(r => r.driveId).map(r => [r.driveId, r]));
+  let pulled = 0, pushed = 0;
+
+  // ドライブ → 端末（新しいものと、変わったものだけ）
+  for (const f of files){
+    const cur = byId.get(f.id);
+    if (cur && cur.modifiedTime === f.modifiedTime) continue;
+    try {
+      const gpx = await driveDownload(f.id);
+      const name = f.name.replace(/\.gpx$/i, '');
+      const folder = (f.appProperties && f.appProperties.folder) || '';
+      if (cur){
+        cur.name = name; cur.gpx = gpx; cur.folder = folder;
+        cur.modifiedTime = f.modifiedTime; cur.savedAt = f.modifiedTime;
+      } else {
+        local.unshift({ name, gpx, folder, driveId:f.id,
+                        modifiedTime:f.modifiedTime, savedAt:f.modifiedTime });
+      }
+      pulled++;
+    } catch { /* 1 本失敗しても続ける */ }
+  }
+
+  // ドライブから消えたものは、端末からも下げる
+  const ids = new Set(files.map(f => f.id));
+  for (let i = local.length - 1; i >= 0; i--)
+    if (local[i].driveId && !ids.has(local[i].driveId)) local.splice(i, 1);
+
+  // 端末 → ドライブ（オフラインで作ったもの）
+  for (const r of local){
+    if (r.driveId) continue;
+    try {
+      const saved = await driveUpload(
+        r.name.replace(/\.gpx$/i, '') + '.gpx', r.gpx, null);
+      r.driveId = saved.id;
+      if (r.folder) await driveUpdateRoute(saved.id, saved.name, r.folder);
+      const info = (await driveList()).find(f => f.id === saved.id);
+      r.modifiedTime = info ? info.modifiedTime : new Date().toISOString();
+      pushed++;
+    } catch { /* 上げられなくても端末には残る */ }
+  }
+
+  saveLocalRoutes(local);
+  await checkStorage();
+
+  if (!opts.quiet && (pulled || pushed))
+    toast(`ルートを同期しました（取り込み ${pulled} / 送信 ${pushed}）`);
+  return { pulled, pushed, total:local.length };
 }
 
 /* ---------- 保存ダイアログ ---------- */
@@ -4339,6 +4441,10 @@ async function saveRouteToDrive(){
     // 同名のファイルがあれば上書きする
     const existing = (await driveList()).find(f => f.name === fileName);
     const saved = await driveUpload(fileName, gpx, existing ? existing.id : null);
+    // オフラインでも開けるよう、同じ内容を端末にも残す
+    try {
+      saveLocalRoute(name, gpx, { driveId:saved.id, folder:rstate.folder || '' });
+    } catch { /* 端末が一杯でも、ドライブには保存できている */ }
     rstate.name = name;
     rstate.driveId = saved.id;
     closeRouteSaveDialog();
@@ -4372,113 +4478,79 @@ function fmtWhen(iso){
                                                     hour:'2-digit', minute:'2-digit' });
 }
 
+/**
+ * 保存したルートの一覧。
+ *
+ * 端末に持っている分をそのまま出す。ログインしていればドライブと
+ * そろえてから出すので、オフラインでも同じ一覧・同じ中身が開ける。
+ */
 async function showSavedRoutes(opts = {}){
   istate.list = 'routes';
   if (opts.fresh) collapseAllFolders();
   const signedIn = isSignedIn();
-  const local = localRoutes();
+  const online = navigator.onLine;
 
-  openPanel(`
-    <div class="p-body">
-      <h2 class="p-title">保存したルート</h2>
-      <div class="p-sub">${signedIn
-        ? `Google ドライブ ＞ マイドライブ ＞ ${esc(DRIVE_FOLDER)}`
-        : 'Google にログインすると、マイドライブに保存できます'}</div>
-      ${signedIn ? '' : `
-        <button class="btn primary" id="routeLoginBtn" style="margin:4px 0 14px">Google にログイン</button>`}
-      <div id="driveRoutes">${signedIn ? '<div class="p-empty">読み込み中…</div>' : ''}</div>
-      ${local.length ? `
-        <div class="p-sec-title">この端末に保存したルート</div>
-        ${folderTreeHtml(groupByFolder(local.map((r,i) => ({ ...r, title:r.name, _i:i }))), list => `
-          <ul class="p-list local-list">
-            ${list.map(r => `
+  const draw = (list, note) => {
+    istate.routeFolders = [...new Set(list.map(r => r.folder).filter(Boolean))];
+    const groups = groupByFolder(list.map((r, i) => ({ ...r, title:r.name, _i:i })));
+    openPanel(`
+      <div class="p-body">
+        <h2 class="p-title">保存したルート</h2>
+        <div class="p-sub">${esc(note)}</div>
+        ${signedIn ? '' : `
+          <button class="btn primary" id="routeLoginBtn" style="margin:4px 0 14px">Google にログイン</button>`}
+        ${list.length ? folderTreeHtml(groups, items => `
+          <ul class="p-list route-list">
+            ${items.map(r => `
               <li data-i="${r._i}">
                 <span class="sg-ic"><svg viewBox="0 0 24 24"><path d="M17 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V7l-4-4zm-5 16a3 3 0 1 1 0-6 3 3 0 0 1 0 6zm3-10H6V5h9v4z"/></svg></span>
-                <span class="li-txt">${esc(r.name)}<div class="li-sub">${fmtWhen(r.savedAt)}</div></span>
+                <span class="li-txt">${esc(r.name)}<div class="li-sub">
+                  ${fmtWhen(r.savedAt)}${r.driveId ? '　ドライブと共有' : '　この端末のみ'}</div></span>
                 <button class="iconbtn small li-edit" data-edit="${r._i}" title="名前・フォルダを変える">
                   <svg viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75z"/></svg>
                 </button>
               </li>`).join('')}
-          </ul>`)}` : ''}
-    </div>`);
+          </ul>`)
+        : `<div class="p-empty">まだ保存したルートがありません。<br>
+            ルート作成バーの「保存」から保存できます。</div>`}
+        <div class="p-empty">
+          ${signedIn
+            ? `保存先：マイドライブ ＞ ${esc(DRIVE_FOLDER)} ＞ ${esc(ROUTE_FOLDER)}<br>
+               同じ内容をこの端末にも持っているので、電波の無い場所でも開けます。`
+            : 'Google にログインすると、ほかの端末とも共有できます。'}
+        </div>
+      </div>`);
 
-  const loginBtn = $('#routeLoginBtn');
-  if (loginBtn) loginBtn.onclick = async () => { if (await driveSignIn()) showSavedRoutes(); };
+    const loginBtn = $('#routeLoginBtn');
+    if (loginBtn) loginBtn.onclick = async () => { if (await driveSignIn()) showSavedRoutes(); };
 
-  $$('.local-list').forEach(list => list.addEventListener('click', e => {
-    const ed = e.target.closest('[data-edit]');
-    if (ed){ editLocalRoute(+ed.dataset.edit); return; }
-    const li = e.target.closest('li'); if (!li) return;
-    const r = localRoutes()[+li.dataset.i];
-    openSavedRoute(() => Promise.resolve(r.gpx), r.name, null);
-  }));
+    $$('.route-list').forEach(el => el.addEventListener('click', e => {
+      const ed = e.target.closest('[data-edit]');
+      if (ed){ editLocalRoute(+ed.dataset.edit); return; }
+      const li = e.target.closest('li'); if (!li) return;
+      const r = localRoutes()[+li.dataset.i];
+      if (r) openSavedRoute(() => Promise.resolve(r.gpx), r.name, r.driveId || null);
+    }));
 
-  if (!signedIn) return;
+    const body = $('#panelBody');
+    if (body) bindDragSort(body, () => showSavedRoutes());
+  };
 
-  let files;
-  try { files = await driveList(); }
-  catch (e){
-    const box = $('#driveRoutes');
-    if (box) box.innerHTML = `<div class="p-empty">${esc(e.message)}</div>`;
-    return;
-  }
+  // まず手元の内容ですぐ出す
+  draw(localRoutes(), signedIn
+    ? (online ? 'Google ドライブとそろえています…' : 'オフライン（この端末の内容を表示中）')
+    : 'この端末のみ');
 
-  const box = $('#driveRoutes');
-  if (!box) return;
+  if (!signedIn || !online) return;
 
-  // フォルダごとに並べる（フォルダ名はファイルの appProperties に持たせている）
-  const items = files.map(f => ({
-    id:f.id, name:f.name, when:f.modifiedTime,
-    folder:(f.appProperties && f.appProperties.folder) || '',
-  }));
-  istate.routeFolders = [...new Set(items.map(i => i.folder).filter(Boolean))];
-  const groups = groupByFolder(items);
-
-  box.innerHTML = items.length ? folderTreeHtml(groups, list => `
-    <ul class="p-list drive-list">
-      ${list.map(f => `
-        <li data-id="${esc(f.id)}" data-name="${esc(f.name)}" data-folder="${esc(f.folder)}">
-          <span class="sg-ic"><svg viewBox="0 0 24 24"><path d="M7.7 3 1.2 14.3l3.2 5.6L11 8.6 7.7 3zm1.6 0 6.5 11.3H22L15.5 3H9.3zM6.1 21h13l3.2-5.6H9.3L6.1 21z"/></svg></span>
-          <span class="li-txt">${esc(f.name)}<div class="li-sub">${fmtWhen(f.when)}</div></span>
-          <button class="iconbtn small li-edit" data-edit="${esc(f.id)}" title="名前・フォルダを変える">
-            <svg viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75z"/></svg>
-          </button>
-        </li>`).join('')}
-    </ul>`)
-    : `<div class="p-empty">「${esc(DRIVE_FOLDER)}」フォルダにはまだルートがありません。<br>
-        ルート作成バーの「保存」から保存できます。</div>`;
-
-  $$('.drive-list').forEach(list => list.addEventListener('click', async e => {
-    const ed = e.target.closest('[data-edit]');
-    if (ed){
-      const li = ed.closest('li');
-      editDriveRoute(li.dataset.id, li.dataset.name, li.dataset.folder);
-      return;
-    }
-    const li = e.target.closest('li'); if (!li) return;
-    openSavedRoute(() => driveDownload(li.dataset.id), li.dataset.name, li.dataset.id);
-  }));
+  const r = await syncRoutes({ quiet:true });
+  const list = localRoutes();
+  draw(list, r
+    ? `${list.length} 件・Google ドライブと共有（オフラインでも開けます）`
+    : 'ドライブに接続できませんでした（この端末の内容を表示中）');
 }
 
-/** ドライブに保存したルートの名前とフォルダを変える */
-function editDriveRoute(id, name, folder){
-  openItemEditor('route', { title:name.replace(/\.gpx$/i, ''), folder }, {
-    onSave: async patch => {
-      const fileName = patch.name.replace(/\.gpx$/i, '') + '.gpx';
-      await driveUpdateRoute(id, fileName, patch.folder);
-      toast('変更しました');
-      showSavedRoutes();
-    },
-    onDelete: async () => {
-      await driveTrash(id);
-      toast('ゴミ箱へ移動しました');
-      showSavedRoutes();
-    },
-  });
-}
-
-
-/** この端末に保存したルートの名前とフォルダを変える */
+/** ルートの名前とフォルダを変える（ドライブにあるものは、あちらにも反映する） */
 function editLocalRoute(i){
   const list = localRoutes();
   const r = list[i];
@@ -4488,10 +4560,17 @@ function editLocalRoute(i){
       r.name = patch.name;
       r.folder = patch.folder;
       saveLocalRoutes(list);
+      if (r.driveId && navigator.onLine && isSignedIn()){
+        try { await driveUpdateRoute(r.driveId, patch.name + '.gpx', patch.folder); }
+        catch { toast('ドライブへの反映はできませんでした'); }
+      }
       toast('変更しました');
       showSavedRoutes();
     },
     onDelete: async () => {
+      if (r.driveId && navigator.onLine && isSignedIn()){
+        try { await driveTrash(r.driveId); } catch {}
+      }
       list.splice(i, 1);
       saveLocalRoutes(list);
       toast('削除しました');
@@ -7338,12 +7417,18 @@ function deg2tile(lng, lat, z){
 }
 
 let toastTimer = null;
-function toast(msg, ms = 3200){
+/**
+ * 画面下のお知らせ。
+ * 長く出ていると邪魔なので、既定は 2 秒。長い文でも 4 秒までにする。
+ * じっくり読んでほしい内容は、お知らせではなく画面（ダイアログ）で出すこと。
+ */
+function toast(msg, ms){
   const el = $('#toast');
   el.textContent = msg;
   el.classList.remove('hidden');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.classList.add('hidden'), ms);
+  const cap = String(msg).length > 40 ? 4000 : 2500;
+  toastTimer = setTimeout(() => el.classList.add('hidden'), Math.min(ms || 2000, cap));
 }
 
 const EMPTY_FC = { type:'FeatureCollection', features:[] };

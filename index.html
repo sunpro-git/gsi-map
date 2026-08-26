@@ -1002,11 +1002,24 @@ body.dnd .fold-head,body.dnd .p-list li{user-select:none;-webkit-user-select:non
 .p-list li.dragging{background:#e8f0fe;}
 .drag-ghost{
 z-index:9999;pointer-events:none;
-background:#fff;border-radius:8px;
-box-shadow:0 8px 20px rgba(60,64,67,.35);
-transform:scale(1.03);opacity:.95;
+background:#fff;border-radius:10px;
+box-shadow:0 10px 26px rgba(60,64,67,.4);
+opacity:.97;
+transform-origin:center left;
+animation:lift .14s ease-out forwards;
 }
+@keyframes lift{
+from{transform:scale(1);}
+to  {transform:scale(1.12);}
+}
+.drag-ghost.fold-head{
+box-shadow:0 10px 26px rgba(60,64,67,.4), inset 0 0 0 2px var(--blue);
+background:#e8f0fe;
+}
+.drag-ghost .fold-name{font-weight:500;}
 .dragging{opacity:.35;}
+.fold-head.drop-before{box-shadow:inset 0 3px 0 var(--blue);border-radius:6px;}
+.fold-head.drop-after{box-shadow:inset 0 -3px 0 var(--blue);border-radius:6px;}
 .navmodes{display:inline-flex;gap:4px;margin-left:6px;}
 .navmode{
 border:1px solid var(--line);background:#fff;color:var(--text-sub);
@@ -1014,7 +1027,7 @@ border-radius:10px;padding:1px 8px;font-size:11px;font-family:inherit;cursor:poi
 }
 .navmode:hover{background:#f1f3f4;color:var(--text);}
 </style>
-<script>window.APP_BUILD='adb8db1b';</script>
+<script>window.APP_BUILD='a08d19d6';</script>
 </head>
 <body>
 
@@ -4556,7 +4569,9 @@ async function showSavedRoutes(opts = {}){
         ${list.length ? folderTreeHtml(groups, items => `
           <ul class="p-list route-list">
             ${items.map(r => `
-              <li data-i="${r._i}">
+              <li data-i="${r._i}" draggable="true" data-drag="route" data-drag-value="${r._i}"
+                  data-drop-item="${r._i}"
+                  title="ドラッグ（スマホは長押しから）で並べ替え・フォルダ移動ができます">
                 <span class="sg-ic"><svg viewBox="0 0 24 24"><path d="M17 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V7l-4-4zm-5 16a3 3 0 1 1 0-6 3 3 0 0 1 0 6zm3-10H6V5h9v4z"/></svg></span>
                 <span class="li-txt">${esc(r.name)}<div class="li-sub">
                   ${fmtWhen(r.savedAt)}${r.driveId ? '　ドライブと共有' : '　この端末のみ'}</div></span>
@@ -5968,6 +5983,7 @@ const FOLDER_MAX_DEPTH = 3;    // 3 階層まで
 
 const FOLDER_STORE = 'gsimap.folders';
 const FOLDER_HIDE_STORE = 'gsimap.foldersHidden';
+const FOLDER_ORDER_STORE = 'gsimap.folderOrder';   // 手で並べ替えたフォルダの順
 
 /* ---------- 階層の扱い ---------- */
 
@@ -6004,11 +6020,78 @@ function rememberFolder(path){
 
 /** そのフォルダと、その下の階層をまとめて忘れる */
 function forgetFolder(path){
+  const gone = f => f === path || f.startsWith(path + FOLDER_SEP);
   try {
-    const list = (JSON.parse(localStorage.getItem(FOLDER_STORE)) || [])
-      .filter(f => f !== path && !f.startsWith(path + FOLDER_SEP));
+    const list = (JSON.parse(localStorage.getItem(FOLDER_STORE)) || []).filter(f => !gone(f));
     localStorage.setItem(FOLDER_STORE, JSON.stringify(list));
   } catch {}
+  putFolderOrder(folderOrder().filter(f => !gone(f)));
+}
+
+/* ---------- 手で決めたフォルダの並び順 ----------
+ *
+ *  並べ替えていないフォルダは名前順のまま。ここに載っているものだけが、
+ *  載っている順に前へ出る。
+ */
+
+function folderOrder(){
+  try { return JSON.parse(localStorage.getItem(FOLDER_ORDER_STORE)) || []; } catch { return []; }
+}
+function putFolderOrder(list){
+  try { localStorage.setItem(FOLDER_ORDER_STORE, JSON.stringify(list)); } catch {}
+}
+
+/** 並び順の中での位置。載っていなければ名前順（いちばん後ろ） */
+function folderRank(path){
+  const i = folderOrder().indexOf(path);
+  return i < 0 ? Infinity : i;
+}
+
+/** そのフォルダの直下にあるフォルダを、いま画面に出ている順で返す */
+function childFolders(parent){
+  const p = parent || '';
+  return knownFolders()
+    .filter(f => folderParts(f).slice(0, -1).join(FOLDER_SEP) === p)
+    .sort(compareFolder);
+}
+
+const compareFolder = (a, b) => {
+  const ra = folderRank(a), rb = folderRank(b);
+  if (ra !== rb) return ra - rb;
+  return folderName(a).localeCompare(folderName(b), 'ja');
+};
+
+/**
+ * 「from」を「target」のすぐ前（または後ろ）に置く。
+ * 別の親の下にあった場合は、その親へ移したうえで並べる。
+ */
+async function placeFolderNextTo(from, target, before){
+  if (!from || !target || from === target) return false;
+  if (target === from || target.startsWith(from + FOLDER_SEP)){
+    toast('自分の中へは移せません');
+    return false;
+  }
+  const parent    = folderParts(target).slice(0, -1).join(FOLDER_SEP);
+  const curParent = folderParts(from).slice(0, -1).join(FOLDER_SEP);
+
+  let path = from;
+  if (parent !== curParent){
+    if (!await moveFolder(from, parent)) return false;
+    path = (parent ? parent + FOLDER_SEP : '') + folderName(from);
+  }
+
+  // いま見えている並びを書き出してから、その中で入れ替える
+  const sibs = childFolders(parent).filter(f => f !== path);
+  const at = sibs.indexOf(target);
+  if (at < 0) return false;
+  sibs.splice(before ? at : at + 1, 0, path);
+
+  const order = folderOrder().filter(f => !sibs.includes(f));
+  putFolderOrder([...sibs, ...order]);
+
+  if (parent === curParent)
+    toast(`「${folderName(path)}」を並べ替えました`);
+  return true;
 }
 
 /* ---------- 表示・非表示 ---------- */
@@ -6079,8 +6162,9 @@ function subtreeCount(node){
        + [...node.children.values()].reduce((t, c) => t + subtreeCount(c), 0);
 }
 
+/** 手で並べ替えた順 →（並べ替えていないものは）名前順 */
 const sortedChildren = node =>
-  [...node.children.values()].sort((a, b) => a.name.localeCompare(b.name, 'ja'));
+  [...node.children.values()].sort((a, b) => compareFolder(a.path, b.path));
 
 /**
  * 折りたたみできる一覧をつくる。
@@ -6201,6 +6285,8 @@ async function moveFolder(from, to){
     const hid = [...hiddenFolders()].map(rename);
     localStorage.setItem(FOLDER_HIDE_STORE, JSON.stringify([...new Set(hid)]));
   } catch {}
+  // 手で決めた並び順
+  putFolderOrder([...new Set(folderOrder().map(rename))]);
   // 地点
   state.saved.forEach(p => { p.folder = rename(p.folder || ''); });
   persistSaved();
@@ -6238,6 +6324,39 @@ function movePlaceToFolder(i, folder){
   return true;
 }
 
+
+/** ルートを別のフォルダへ移す（ドライブにあるものは、あちらにも反映する） */
+async function moveRouteToFolder(i, folder){
+  const list = localRoutes();
+  const r = list[i];
+  if (!r || (r.folder || '') === (folder || '')) return false;
+  r.folder = folder || '';
+  saveLocalRoutes(list);
+  if (r.driveId && navigator.onLine && isSignedIn()){
+    try { await driveUpdateRoute(r.driveId, r.name + '.gpx', r.folder); } catch {}
+  }
+  toast(`「${r.name}」を${folder ? `「${folderName(folder)}」へ` : '未分類へ'}移しました`);
+  return true;
+}
+
+/** ルートの並び順を入れ替える（落とした先が別のフォルダなら、そこへ移る） */
+async function reorderRoute(from, to, before){
+  const arr = localRoutes();
+  const item = arr[from], target = arr[to];
+  if (!item || !target || item === target) return false;
+
+  const moved = (item.folder || '') !== (target.folder || '');
+  item.folder = target.folder || '';
+  arr.splice(from, 1);
+  const at = arr.indexOf(target);
+  arr.splice(before ? at : at + 1, 0, item);
+  saveLocalRoutes(arr);
+
+  if (moved && item.driveId && navigator.onLine && isSignedIn()){
+    try { await driveUpdateRoute(item.driveId, item.name + '.gpx', item.folder); } catch {}
+  }
+  return true;
+}
 
 /**
  * 地点の並び順を入れ替える。
@@ -6277,6 +6396,7 @@ function bindDragSort(container, onDone){
   let dragging = null;      // { kind, value, el }
   let target = null;        // いま落とそうとしている場所
   let ghost = null;         // 指で持ち上げているときの見た目
+  let justDragged = false;  // 運び終えた直後（この間の click は捨てる）
 
   const clearMarks = () => container
     .querySelectorAll('.drop-over,.drop-before,.drop-after')
@@ -6295,13 +6415,25 @@ function bindDragSort(container, onDone){
   }
 
   function end(){
-    if (dragging) dragging.el.classList.remove('dragging');
+    if (dragging){
+      dragging.el.classList.remove('dragging');
+      // 指を離した直後の click で、フォルダが開いたり地点が選ばれたりしないようにする
+      justDragged = true;
+      setTimeout(() => { justDragged = false; }, 400);
+    }
     document.body.classList.remove('dnd');
     dropGhost();
     dragging = null;
     target = null;
     clearMarks();
   }
+
+  // 運んだ直後の click は捨てる（つかむ操作と押す操作を分けるため）
+  container.addEventListener('click', e => {
+    if (!justDragged) return;
+    e.preventDefault();
+    e.stopPropagation();
+  }, true);
 
   /* 指でつかんだときは、その行を持ち上げて指について来させる */
   function liftGhost(el, x, y){
@@ -6327,24 +6459,49 @@ function bindDragSort(container, onDone){
     ghost = null;
   }
 
-  /** 座標から落とし先を決めて、印を付ける */
+  /**
+   * 座標から落とし先を決めて、印を付ける。
+   *
+   * フォルダの見出しは、上下の端と真ん中で意味が変わる。
+   *   上の端 … そのフォルダの前に並べる
+   *   真ん中 … そのフォルダの中へ入れる
+   *   下の端 … そのフォルダの後ろに並べる
+   */
   function markAt(x, y){
     const el = document.elementFromPoint(x, y);
     if (!el || !dragging){ clearMarks(); return null; }
 
-    // 行の上 … 並び順を入れ替える（地点どうしのみ）
+    // 行の上 … 並び順を入れ替える（同じ一覧の中だけ）
     const row = el.closest('[data-drop-item]');
-    if (row && dragging.kind === 'place' && +row.dataset.dropItem !== +dragging.value){
-      clearMarks();
-      const before = rowSide(row, y);
-      row.classList.add(before ? 'drop-before' : 'drop-after');
-      return { type:'row', index:+row.dataset.dropItem, before };
+    if (row){
+      const listKind = row.closest('.route-list') ? 'route' : 'place';
+      if (dragging.kind === listKind && +row.dataset.dropItem !== +dragging.value){
+        clearMarks();
+        const before = rowSide(row, y);
+        row.classList.add(before ? 'drop-before' : 'drop-after');
+        return { type:'row', index:+row.dataset.dropItem, before };
+      }
     }
 
-    // フォルダの見出しの上 … そのフォルダへ移す
     const head = el.closest('[data-drop]');
     if (head){
       const to = head.dataset.drop === '__root__' ? '' : head.dataset.drop;
+
+      // フォルダを運んでいるときだけ、上下の端で並べ替えにする
+      if (dragging.kind === 'folder' && to){
+        const r = head.getBoundingClientRect();
+        const rel = (y - r.top) / Math.max(1, r.height);
+        if (rel < 0.3 || rel > 0.7){
+          const before = rel < 0.3;
+          if (to === dragging.value || to.startsWith(dragging.value + FOLDER_SEP)){
+            clearMarks(); return null;
+          }
+          clearMarks();
+          head.classList.add(before ? 'drop-before' : 'drop-after');
+          return { type:'foldOrder', target:to, before };
+        }
+      }
+
       if (dragging.kind === 'folder' && !canMoveFolder(dragging.value, to)){
         clearMarks(); return null;
       }
@@ -6358,10 +6515,18 @@ function bindDragSort(container, onDone){
 
   async function apply(d, t){
     if (!d || !t) return;
-    const done = t.type === 'row'
-      ? reorderPlace(+d.value, t.index, t.before)
-      : (d.kind === 'folder' ? await moveFolder(d.value, t.to)
-                             : movePlaceToFolder(+d.value, t.to));
+    let done = false;
+    if (t.type === 'row'){
+      done = d.kind === 'route'
+        ? await reorderRoute(+d.value, t.index, t.before)
+        : reorderPlace(+d.value, t.index, t.before);
+    } else if (t.type === 'foldOrder'){
+      done = await placeFolderNextTo(d.value, t.target, t.before);
+    } else {
+      done = d.kind === 'folder' ? await moveFolder(d.value, t.to)
+           : d.kind === 'route'  ? await moveRouteToFolder(+d.value, t.to)
+           :                       movePlaceToFolder(+d.value, t.to);
+    }
     if (done && istate.onDrop) istate.onDrop();
   }
 
@@ -6411,7 +6576,9 @@ function bindDragSort(container, onDone){
     if (e.touches.length !== 1) return;
     const el = e.target.closest('[data-drag]');
     if (!el) return;
-    if (e.target.closest('button, input, label')) return;   // ボタンはふつうに押せるように
+    // チェックボックス・削除・編集は、ふつうに押せるようにしておく。
+    // フォルダの見出しは全体がボタンなので、ここを外すとつかめなくなる
+    if (e.target.closest('input, .fold-show, .fold-del, .li-edit')) return;
     const t = e.touches[0];
     from = { x:t.clientX, y:t.clientY };
     hold = setTimeout(() => {

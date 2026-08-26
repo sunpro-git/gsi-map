@@ -13,7 +13,7 @@
 const VERSION    = 'v2';
 // アプリ本体のキャッシュ名だけはビルドごとに変える（build.py が中身から自動で書き込む）。
 // 地図タイルのキャッシュは VERSION のままにして、更新のたびに消えないようにする。
-const APP_BUILD  = 'adb8db1b';
+const APP_BUILD  = 'a08d19d6';
 const APP_CACHE  = 'gsimap-app-' + APP_BUILD;
 const TILE_CACHE = 'gsimap-tiles-' + VERSION;
 const API_CACHE  = 'gsimap-api-' + VERSION;

@@ -976,6 +976,10 @@ display:flex;align-items:center;justify-content:center;
 .fold-show{display:flex;align-items:center;flex:none;cursor:pointer;}
 .fold-show input{width:15px;height:15px;margin:0;accent-color:var(--blue);cursor:pointer;}
 .fold-spacer{width:15px;flex:none;}
+.fold-head,.p-list li{
+-webkit-touch-callout:none;
+-webkit-user-select:none;user-select:none;
+}
 .fold-head[draggable="true"]{cursor:grab;}
 .fold-head.dragging,.p-list li.dragging{opacity:.4;}
 .p-list li[draggable="true"]{cursor:grab;}
@@ -989,10 +993,10 @@ display:flex;align-items:center;gap:6px;flex:1;min-width:0;
 border:0;background:transparent;padding:2px 0;cursor:pointer;
 font-family:inherit;font-size:12px;font-weight:500;color:var(--text-sub);
 }
-.fold-open:disabled{cursor:default;}
+.fold-open.off{cursor:default;}
 .fold-open .chev{width:14px;height:14px;fill:currentColor;flex:none;transition:transform .15s;}
 .fold-head.open .fold-open .chev{transform:rotate(90deg);}
-.fold-open:disabled .chev{opacity:.25;}
+.fold-open.off .chev{opacity:.25;}
 .fold-open .fold-ic{width:16px;height:16px;fill:currentColor;flex:none;}
 .fold-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .fold-open .fold-n{margin-left:auto;}
@@ -1030,7 +1034,7 @@ border-radius:10px;padding:1px 8px;font-size:11px;font-family:inherit;cursor:poi
 }
 .navmode:hover{background:#f1f3f4;color:var(--text);}
 </style>
-<script>window.APP_BUILD='4bb18bc8';</script>
+<script>window.APP_BUILD='5ac9f952';</script>
 </head>
 <body>
 
@@ -6233,13 +6237,14 @@ function folderHead(node, st){
     ${path ? `<label class="fold-show" title="地図に表示する">
         <input type="checkbox" data-showfolder="${esc(path)}"${hidden ? '' : ' checked'}>
       </label>` : '<span class="fold-spacer"></span>'}
-    <button class="fold-open" data-openfolder="${path ? esc(path) : '__root__'}"
-            title="${st.open ? '閉じる' : '開く'}"${st.has ? '' : ' disabled'}>
+    <div class="fold-open${st.has ? '' : ' off'}" role="button" tabindex="0"
+         data-openfolder="${path ? esc(path) : '__root__'}"
+         title="${st.open ? '閉じる' : '開く'}">
       <svg class="chev" viewBox="0 0 24 24"><path d="M10 17l5-5-5-5z"/></svg>
       <svg class="fold-ic" viewBox="0 0 24 24"><path d="M10 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-2z"/></svg>
       <span class="fold-name">${esc(name)}</span>
       <span class="fold-n">${st.count}</span>
-    </button>
+    </div>
     ${path ? `<button class="iconbtn small fold-edit" data-editfolder="${esc(path)}"
         title="名前・場所を変える"><svg viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75z"/></svg></button>` : ''}
   </div>`;
@@ -6598,8 +6603,9 @@ function bindDragSort(container, onDone){
 
   /* ---- スマホ（長押ししてから動かす） ---- */
 
-  const HOLD_MS = 400;      // これだけ押し続けたら、つかんだことにする
-  const SLIP_PX = 8;        // その前にこれ以上動いたら、ふつうのスクロール
+  // iPhone は 0.5 秒ほどで文字選択の虫めがねが出てしまうので、それより早くつかむ
+  const HOLD_MS = 320;      // これだけ押し続けたら、つかんだことにする
+  const SLIP_PX = 10;       // その前にこれ以上動いたら、ふつうのスクロール
   let hold = null, from = null;
 
   /** 端に近づいたら一覧を自動で送る */
@@ -6775,6 +6781,16 @@ function bindItemsUI(){
     toggleFolderHidden(c.dataset.showfolder);
     renderPlacePins();
     refreshItemList();
+  });
+
+  // フォルダの見出しは（iPhone の長押し対策で）ボタン要素ではないので、
+  // キーボードでも開けるようにしておく
+  document.addEventListener('keydown', e => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    const o = e.target.closest && e.target.closest('[data-openfolder]');
+    if (!o) return;
+    e.preventDefault();
+    o.click();
   });
 
   document.addEventListener('click', e => {

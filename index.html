@@ -968,7 +968,10 @@ display:flex;align-items:center;justify-content:center;
 .icopt .ico-name{font-size:10px;color:var(--text-sub);line-height:1.2;text-align:center;}
 .btn.danger{color:#d93025;}
 .btn.danger:hover{background:rgba(217,48,37,.08);}
-.fold-head .fold-del{margin-left:4px;}
+.fold-head .fold-del,
+.fold-head .fold-edit{margin-left:4px;flex:none;}
+.fold-head .fold-edit{opacity:.6;}
+.fold-head .fold-edit:hover{opacity:1;}
 .fold-head.off{opacity:.45;}
 .fold-show{display:flex;align-items:center;flex:none;cursor:pointer;}
 .fold-show input{width:15px;height:15px;margin:0;accent-color:var(--blue);cursor:pointer;}
@@ -1027,7 +1030,7 @@ border-radius:10px;padding:1px 8px;font-size:11px;font-family:inherit;cursor:poi
 }
 .navmode:hover{background:#f1f3f4;color:var(--text);}
 </style>
-<script>window.APP_BUILD='a08d19d6';</script>
+<script>window.APP_BUILD='4bb18bc8';</script>
 </head>
 <body>
 
@@ -1376,7 +1379,7 @@ border-radius:10px;padding:1px 8px;font-size:11px;font-family:inherit;cursor:poi
       <input id="itemName" type="text" autocomplete="off" spellcheck="false">
     </div>
     <div class="modal-field">
-      <label class="fl">フォルダ<span>分けて整理できます</span></label>
+      <label class="fl"><span id="itemFolderLabel">フォルダ</span><span id="itemFolderHint">分けて整理できます</span></label>
       <select id="itemFolder" class="fsel"></select>
       <div id="itemNewWrap" class="hidden" style="margin-top:6px">
         <select id="itemFolderParent" class="fsel"></select>
@@ -6221,7 +6224,6 @@ function folderHead(node, st){
   const path = node.path;
   const depth = folderDepth(path);
   const name = path ? node.name : NO_FOLDER;
-  const empty = st.count === 0 && path;
   const hidden = path ? hiddenFolders().has(path) : false;
   const dimmed = path && folderHidden(path);
   return `<div class="fold-head${dimmed ? ' off' : ''}${st.open ? ' open' : ''}"
@@ -6238,8 +6240,8 @@ function folderHead(node, st){
       <span class="fold-name">${esc(name)}</span>
       <span class="fold-n">${st.count}</span>
     </button>
-    ${empty ? `<button class="iconbtn small fold-del" data-delfolder="${esc(path)}"
-        title="この空のフォルダを消す"><svg viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg></button>` : ''}
+    ${path ? `<button class="iconbtn small fold-edit" data-editfolder="${esc(path)}"
+        title="名前・場所を変える"><svg viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75z"/></svg></button>` : ''}
   </div>`;
 }
 
@@ -6272,6 +6274,31 @@ async function moveFolder(from, to){
     return false;
   }
   const dest = (to ? to + FOLDER_SEP : '') + folderName(from);
+  await retargetFolder(from, dest);
+  toast(`「${folderName(from)}」を${to ? `「${folderName(to)}」の中へ` : 'いちばん上へ'}移しました`);
+  return true;
+}
+
+/** フォルダの名前を変える（場所はそのまま） */
+async function renameFolder(path, name){
+  const clean = (name || '').trim().replace(/[/／]/g, '-');
+  if (!clean || clean === folderName(path)) return false;
+  const parent = folderParts(path).slice(0, -1).join(FOLDER_SEP);
+  const dest = (parent ? parent + FOLDER_SEP : '') + clean;
+  if (knownFolders().includes(dest)){
+    toast(`同じ場所に「${clean}」があります`, 5000);
+    return false;
+  }
+  await retargetFolder(path, dest);
+  toast(`「${folderName(path)}」を「${clean}」に変えました`);
+  return true;
+}
+
+/**
+ * フォルダの位置・名前を実際に付け替える。
+ * 中に入っている地点・ルート、表示の設定、並び順もまとめて書き換える。
+ */
+async function retargetFolder(from, dest){
   const rename = f => (f === from || f.startsWith(from + FOLDER_SEP))
     ? dest + f.slice(from.length) : f;
 
@@ -6308,7 +6335,16 @@ async function moveFolder(from, to){
       }
     } catch { /* 反映できなくても一覧は動く */ }
   }
-  toast(`「${folderName(from)}」を${to ? `「${folderName(to)}」の中へ` : 'いちばん上へ'}移しました`);
+  rememberFolder(dest);
+  return true;
+}
+
+/** そのフォルダの中に、地点・ルート・下位フォルダが 1 つも無いか */
+function folderIsEmpty(path){
+  const under = f => f === path || (f || '').startsWith(path + FOLDER_SEP);
+  if (state.saved.some(p => under(p.folder))) return false;
+  if (knownFolders().some(f => f !== path && under(f))) return false;
+  try { if (localRoutes().some(r => under(r.folder))) return false; } catch {}
   return true;
 }
 
@@ -6490,9 +6526,11 @@ function bindDragSort(container, onDone){
       // フォルダを運んでいるときだけ、上下の端で並べ替えにする
       if (dragging.kind === 'folder' && to){
         const r = head.getBoundingClientRect();
-        const rel = (y - r.top) / Math.max(1, r.height);
-        if (rel < 0.3 || rel > 0.7){
-          const before = rel < 0.3;
+        // 指でも狙えるよう、端の帯は最低 12px は確保する
+        const edge = Math.max(12, r.height * 0.3);
+        const top = y < r.top + edge, bottom = y > r.bottom - edge;
+        if (top || bottom){
+          const before = top;
           if (to === dragging.value || to.startsWith(dragging.value + FOLDER_SEP)){
             clearMarks(); return null;
           }
@@ -6578,7 +6616,7 @@ function bindDragSort(container, onDone){
     if (!el) return;
     // チェックボックス・削除・編集は、ふつうに押せるようにしておく。
     // フォルダの見出しは全体がボタンなので、ここを外すとつかめなくなる
-    if (e.target.closest('input, .fold-show, .fold-del, .li-edit')) return;
+    if (e.target.closest('input, .fold-show, .fold-del, .fold-edit, .li-edit')) return;
     const t = e.touches[0];
     from = { x:t.clientX, y:t.clientY };
     hold = setTimeout(() => {
@@ -6627,19 +6665,25 @@ function openItemEditor(kind, item, handlers, labels){
   istate.target = { kind, item, handlers };
   const isPlace = kind === 'place';
 
-  const folders = knownFolders();
+  const isFolder = kind === 'folder';
+  const pick = (labels && labels.folderFilter) || (() => true);
+  const folders = knownFolders().filter(pick);
   const cur = item.folder || '';
   $('#itemModalTitle').textContent = (labels && labels.title)
     || (isPlace ? '地点の設定' : 'ルートの設定');
   $('#itemSave').textContent = (labels && labels.save) || '保存';
   $('#itemIconWrap').classList.toggle('hidden', !isPlace);
+  $('#itemFolderLabel').textContent = isFolder ? '場所' : 'フォルダ';
+  $('#itemFolderHint').textContent = isFolder
+    ? 'この中に入ります' : '分けて整理できます';
 
   $('#itemName').value = item.title || item.name || '';
   const label = f => '　'.repeat(Math.max(0, folderDepth(f) - 1)) + folderName(f);
   $('#itemFolder').innerHTML =
-    `<option value="">${NO_FOLDER}</option>`
+    `<option value="">${esc((labels && labels.rootLabel) || NO_FOLDER)}</option>`
     + folders.map(f => `<option value="${esc(f)}"${f === cur ? ' selected' : ''}>${esc(label(f))}</option>`).join('')
-    + '<option value="__new__">＋ 新しいフォルダ…</option>';
+    // フォルダ自身を動かすときは、その場で新しい入れ物を作る必要がない
+    + (isFolder ? '' : '<option value="__new__">＋ 新しいフォルダ…</option>');
 
   // 新しく作るときの親フォルダ（3 階層までなので、親は 2 階層まで）
   $('#itemFolderParent').innerHTML =
@@ -6677,6 +6721,42 @@ function closeItemEditor(){
   istate.target = null;
 }
 
+/**
+ * フォルダの設定。名前を変える／別のフォルダの中へ移す／いちばん上へ出す。
+ *
+ * ドラッグでも移せるが、スマホでは細かい位置合わせが要るので、
+ * ここから確実に選べるようにしておく（一つ上の階層へ戻すときに使う）。
+ */
+function editFolder(path){
+  if (!path) return;
+  const parent = folderParts(path).slice(0, -1).join(FOLDER_SEP);
+  const empty = folderIsEmpty(path);
+
+  openItemEditor('folder', { title:folderName(path), folder:parent }, {
+    onSave: async patch => {
+      let cur = path;
+      const to = patch.folder || '';
+      if (to !== parent){
+        if (!await moveFolder(cur, to)) { refreshItemList(); return; }
+        cur = (to ? to + FOLDER_SEP : '') + folderName(cur);
+      }
+      await renameFolder(cur, patch.name);
+      refreshItemList();
+    },
+    onDelete: empty ? async () => {
+      forgetFolder(path);
+      toast(`フォルダ「${folderName(path)}」を消しました`);
+      refreshItemList();
+    } : null,
+  }, {
+    title: 'フォルダの設定',
+    rootLabel: `${NO_FOLDER}（いちばん上）`,
+    // 自分自身と、その下にあるフォルダは移動先にできない
+    folderFilter: f => f === parent
+      || (f !== path && !f.startsWith(path + FOLDER_SEP) && canMoveFolder(path, f)),
+  });
+}
+
 function itemFolderValue(){
   const sel = $('#itemFolder').value;
   if (sel !== '__new__') return sel;
@@ -6706,6 +6786,9 @@ function bindItemsUI(){
       refreshItemList();
       return;
     }
+    const ed = e.target.closest('[data-editfolder]');
+    if (ed){ editFolder(ed.dataset.editfolder); return; }
+
     const b = e.target.closest('[data-delfolder]');
     if (!b) return;
     forgetFolder(b.dataset.delfolder);

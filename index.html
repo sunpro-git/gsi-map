@@ -1034,7 +1034,7 @@ border-radius:10px;padding:1px 8px;font-size:11px;font-family:inherit;cursor:poi
 }
 .navmode:hover{background:#f1f3f4;color:var(--text);}
 </style>
-<script>window.APP_BUILD='5ac9f952';</script>
+<script>window.APP_BUILD='2d117d3b';</script>
 </head>
 <body>
 
@@ -3961,11 +3961,11 @@ async function driveSignIn(){
         // 保存した場所と設定をドライブと同期する（他の端末の内容もここで取り込む）
         try {
           const before = state.saved.length;
+          await syncSettings();                 // フォルダ・並び順が先
           await syncPlaces();
           const after = state.saved.length;
           if (after !== before)
             toast(`保存した場所を同期しました（${before} 件 → ${after} 件）`, 5000);
-          await syncSettings();
           await syncRoutes({ quiet:true });
         } catch (e){
           if (e.message !== 'SIGNED_OUT') toast('保存した場所の同期に失敗しました：' + e.message, 5000);
@@ -4034,7 +4034,7 @@ async function silentSignIn(){
         updateAuthUi();
         hideGate();
         finish(true);
-        try { await syncPlaces(); await syncSettings(); } catch {}
+        try { await syncAll({ force:true }); } catch {}
       },
       error_callback: () => finish(false),        // 静かに諦める（画面は出さない）
     });
@@ -4238,19 +4238,27 @@ async function findPlacesFile(){
   return dstate.placesId;
 }
 
+const PLACES_AT_STORE = 'gsimap.placesUpdatedAt';   // この端末で最後に並べ直した時刻
+
+function placesUpdatedAt(){ return localStorage.getItem(PLACES_AT_STORE) || ''; }
+function stampPlaces(at){
+  try { localStorage.setItem(PLACES_AT_STORE, at || new Date().toISOString()); } catch {}
+}
+
 async function pullPlaces(){
   const id = await findPlacesFile();
   if (!id) return null;                     // まだ作られていない
   try {
     const j = JSON.parse(await driveDownload(id));
-    return Array.isArray(j.places) ? j.places : [];
-  } catch { return []; }
+    return { places: Array.isArray(j.places) ? j.places : [],
+             updatedAt: j.updatedAt || '' };
+  } catch { return { places:[], updatedAt:'' }; }
 }
 
 async function pushPlaces(){
   const body = JSON.stringify({
-    version: 1,
-    updatedAt: new Date().toISOString(),
+    version: 2,
+    updatedAt: placesUpdatedAt() || new Date().toISOString(),
     places: state.saved,
   }, null, 1);
   if (dstate.placesId === undefined) await findPlacesFile();
@@ -4259,8 +4267,16 @@ async function pushPlaces(){
   dstate.placesId = saved.id;
 }
 
-/** 端末側とドライブ側を突き合わせる（同じ地点は新しい方を残す） */
-function mergePlaces(local, remote){
+/**
+ * 端末側とドライブ側を突き合わせる。
+ *
+ *   中身  … 同じ地点は、あとから直した方（savedAt が新しい方）を残す
+ *   並び順… あとから並べ替えた方の順に合わせる
+ *
+ * 並び順を savedAt で決めてしまうと、手で並べ替えた順が同期のたびに
+ * 消えてしまうので、どちらの端末で並べ直したかを updatedAt で見る。
+ */
+function mergePlaces(local, remote, remoteAt){
   const map = new Map();
   for (const p of [...(remote || []), ...(local || [])]){
     if (!p || !isFinite(+p.lat) || !isFinite(+p.lng)) continue;
@@ -4268,8 +4284,19 @@ function mergePlaces(local, remote){
     const prev = map.get(k);
     if (!prev || (p.savedAt || '') > (prev.savedAt || '')) map.set(k, p);
   }
-  return Array.from(map.values())
-    .sort((a, b) => (b.savedAt || '').localeCompare(a.savedAt || ''));
+
+  const l = local || [], r = remote || [];
+  const remoteWins = (remoteAt || '') > placesUpdatedAt();
+  const out = [], seen = new Set();
+  for (const src of remoteWins ? [r, l] : [l, r])
+    for (const p of src){
+      if (!p || !isFinite(+p.lat) || !isFinite(+p.lng)) continue;
+      const k = placeKey(p);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push(map.get(k));
+    }
+  return { list: out, remoteWins };
 }
 
 /**
@@ -4279,12 +4306,19 @@ function mergePlaces(local, remote){
 async function syncPlaces(){
   if (!isSignedIn()) return false;
   const remote = await pullPlaces();
-  const merged = mergePlaces(state.saved, remote);
-  const changed = JSON.stringify(merged) !== JSON.stringify(state.saved);
-  state.saved = merged;
-  if (changed) persistSaved();
+  const { list, remoteWins } = mergePlaces(state.saved, remote && remote.places,
+                                           remote && remote.updatedAt);
+  const changed = JSON.stringify(list) !== JSON.stringify(state.saved);
+  state.saved = list;
+  if (changed){
+    // ドライブ側の並びを受け取ったときは、その時刻をこの端末の印にする
+    // （そうしないと、次の同期でこちらの古い順に戻してしまう）
+    if (remoteWins) stampPlaces(remote.updatedAt);
+    persistSaved({ keepStamp:true });
+  }
   // ドライブ側に無い／内容が違うときだけ書き戻す
-  if (remote === null || changed || JSON.stringify(remote) !== JSON.stringify(merged))
+  if (!remote || (!remoteWins && (changed
+      || JSON.stringify(remote.places) !== JSON.stringify(list))))
     await pushPlaces();
   dstate.placesSyncedAt = new Date();
   return true;
@@ -4322,11 +4356,68 @@ async function pullSettings(){
   try { return JSON.parse(await driveDownload(id)); } catch { return null; }
 }
 
+/* ---------- 整理の状態（フォルダ・並び順）----------
+ *
+ *  フォルダは名前だけの入れ物なので、地点やルートのファイルには残らない。
+ *  そこで settings.json に一式を入れて、端末どうしでそろえる。
+ *  ルートの並び順もここで持つ（ドライブのファイルには順番を書く場所がないため）。
+ */
+
+const ORG_AT_STORE = 'gsimap.orgUpdatedAt';
+
+function orgUpdatedAt(){ return localStorage.getItem(ORG_AT_STORE) || ''; }
+
+/** フォルダや並び順を変えたときに呼ぶ。少し待ってからまとめてドライブへ送る */
+let orgPushTimer = null;
+function markOrgChanged(){
+  try { localStorage.setItem(ORG_AT_STORE, new Date().toISOString()); } catch {}
+  if (!isSignedIn() || !navigator.onLine) return;
+  clearTimeout(orgPushTimer);
+  orgPushTimer = setTimeout(() => { pushSettings().catch(() => {}); }, 800);
+}
+
+const routeKey = r => r.driveId ? 'id:' + r.driveId : 'name:' + (r.name || '');
+
+/** 決められた順に並べ替える（順に載っていないものは、いまの並びのまま後ろへ） */
+function applyRouteOrder(list, order){
+  if (!order || !order.length) return list;
+  const rank = new Map(order.map((k, i) => [k, i]));
+  return list
+    .map((r, i) => ({ r, i, k:rank.has(routeKey(r)) ? rank.get(routeKey(r)) : Infinity }))
+    .sort((a, b) => (a.k !== b.k ? a.k - b.k : a.i - b.i))
+    .map(x => x.r);
+}
+
+function readOrg(){
+  const get = k => { try { return JSON.parse(localStorage.getItem(k)) || []; } catch { return []; } };
+  return {
+    updatedAt: orgUpdatedAt(),
+    folders: get(FOLDER_STORE),
+    folderOrder: get(FOLDER_ORDER_STORE),
+    foldersHidden: get(FOLDER_HIDE_STORE),
+    routeOrder: localRoutes().map(routeKey),
+  };
+}
+
+function writeOrg(org){
+  if (!org) return;
+  const put = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v || [])); } catch {} };
+  put(FOLDER_STORE, org.folders);
+  put(FOLDER_ORDER_STORE, org.folderOrder);
+  put(FOLDER_HIDE_STORE, org.foldersHidden);
+  try { localStorage.setItem(ORG_AT_STORE, org.updatedAt || ''); } catch {}
+  if (org.routeOrder && org.routeOrder.length){
+    const sorted = applyRouteOrder(localRoutes(), org.routeOrder);
+    saveLocalRoutes(sorted);
+  }
+}
+
 async function pushSettings(){
   const body = JSON.stringify({
-    version: 1,
+    version: 2,
     updatedAt: new Date().toISOString(),
     mapsApiKey: getApiKey(),
+    org: readOrg(),
   }, null, 1);
   if (dstate.settingsId === undefined) await findSettingsFile();
   const saved = await driveUpload(SETTINGS_FILE, body, dstate.settingsId,
@@ -4344,19 +4435,62 @@ async function syncSettings(){
   let remote = null;
   try { remote = await pullSettings(); } catch { return; }
 
+  let needPush = false;
+
+  // ---- 整理の状態（フォルダ・並び順）。あとから直した方に合わせる ----
+  const remoteOrg = remote && remote.org;
+  const remoteAt = (remoteOrg && remoteOrg.updatedAt) || '';
+
+  // これまでの版で作ったフォルダには時刻の記録が無い。
+  // 中身があるのに印だけ無い場合は、いま付けてドライブへ上げる
+  if (!orgUpdatedAt()){
+    const cur = readOrg();
+    if (cur.folders.length || cur.folderOrder.length || cur.foldersHidden.length)
+      try { localStorage.setItem(ORG_AT_STORE, new Date().toISOString()); } catch {}
+  }
+  const localAt = orgUpdatedAt();
+  if (remoteAt && remoteAt > localAt) writeOrg(remoteOrg);
+  else if (localAt && localAt > remoteAt) needPush = true;
+
+  // ---- Maps API キー ----
   const localKey  = getApiKey();
   const remoteKey = remote && remote.mapsApiKey;
-
   if (remoteKey && remoteKey !== localKey){
     saveApiKey(remoteKey);
     refreshThumbs();
     toast(gstate.loaded
       ? 'Maps API キーを取り込みました。再読み込みすると Google の地図が使えます'
       : 'Maps API キーを取り込みました（他の端末で設定したもの）', 6000);
-    return;
+  } else if (localKey && !remoteKey){
+    needPush = true;
   }
-  if (localKey && !remoteKey){
+
+  if (needPush){
     try { await pushSettings(); } catch { /* 失敗しても端末側の設定は残る */ }
+  }
+}
+
+/* ---------- 端末どうしをそろえる ---------- */
+
+let lastSyncAt = 0;
+
+/**
+ * 整理の状態・地点・ルートをまとめて突き合わせる。
+ * 一覧を開いたときや、アプリに戻ってきたときに呼ぶ。
+ * 短い間に何度も呼ばれても、実際に通信するのは 20 秒に 1 回まで。
+ */
+async function syncAll(opts = {}){
+  if (!isSignedIn() || !navigator.onLine) return false;
+  const now = Date.now();
+  if (!opts.force && now - lastSyncAt < 20000) return false;
+  lastSyncAt = now;
+  try {
+    await syncSettings();          // フォルダ・並び順を先に合わせる
+    await syncPlaces();
+    await syncRoutes({ quiet:true });
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -4619,7 +4753,7 @@ async function showSavedRoutes(opts = {}){
 
   if (!signedIn || !online) return;
 
-  const r = await syncRoutes({ quiet:true });
+  const r = await syncAll({ force:true });   // フォルダ・並び順もそろえる
   const list = localRoutes();
   draw(list, r
     ? `${list.length} 件・Google ドライブと共有（オフラインでも開けます）`
@@ -4916,6 +5050,16 @@ function showAccountPanel(){
 /* ---------- UI 配線（app.js の bindUI から呼ぶ） ---------- */
 
 function bindDriveUI(){
+  // ほかの端末に戻ってきたとき、開いた時点で最新にそろえる
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden || !isSignedIn()) return;
+    syncAll().then(ok => {
+      // 一覧を開いたままなら、その場で出し直す
+      if (ok && !$('#panel').classList.contains('hidden')) refreshItemList();
+    }).catch(() => {});
+  });
+  window.addEventListener('online', () => { syncAll({ force:true }).catch(() => {}); });
+
   $('#accountBtn').onclick = showAccountPanel;
   $('#rbSave').onclick = openRouteSaveDialog;
   $('#routeSaveCancel').onclick = closeRouteSaveDialog;
@@ -6023,6 +6167,7 @@ function rememberFolder(path){
   const add = folderChain(path).filter(c => !list.includes(c));
   if (!add.length) return;
   try { localStorage.setItem(FOLDER_STORE, JSON.stringify([...list, ...add])); } catch {}
+  if (typeof markOrgChanged === 'function') markOrgChanged();
 }
 
 /** そのフォルダと、その下の階層をまとめて忘れる */
@@ -6046,6 +6191,7 @@ function folderOrder(){
 }
 function putFolderOrder(list){
   try { localStorage.setItem(FOLDER_ORDER_STORE, JSON.stringify(list)); } catch {}
+  if (typeof markOrgChanged === 'function') markOrgChanged();
 }
 
 /** 並び順の中での位置。載っていなければ名前順（いちばん後ろ） */
@@ -6120,6 +6266,7 @@ function toggleFolderHidden(path){
   if (hid.has(path)) hid.delete(path);
   else hid.add(path);
   try { localStorage.setItem(FOLDER_HIDE_STORE, JSON.stringify([...hid])); } catch {}
+  if (typeof markOrgChanged === 'function') markOrgChanged();
 }
 
 const istate = {
@@ -6373,6 +6520,7 @@ async function moveRouteToFolder(i, folder){
   if (!r || (r.folder || '') === (folder || '')) return false;
   r.folder = folder || '';
   saveLocalRoutes(list);
+  markOrgChanged();
   if (r.driveId && navigator.onLine && isSignedIn()){
     try { await driveUpdateRoute(r.driveId, r.name + '.gpx', r.folder); } catch {}
   }
@@ -6392,6 +6540,7 @@ async function reorderRoute(from, to, before){
   const at = arr.indexOf(target);
   arr.splice(before ? at : at + 1, 0, item);
   saveLocalRoutes(arr);
+  markOrgChanged();          // 並び順はドライブの settings.json で共有する
 
   if (moved && item.driveId && navigator.onLine && isSignedIn()){
     try { await driveUpdateRoute(item.driveId, item.name + '.gpx', item.folder); } catch {}
@@ -8195,8 +8344,14 @@ function loadSaved(){
   try { return JSON.parse(localStorage.getItem('gsimap.saved') || '[]'); }
   catch { return []; }
 }
-function persistSaved(){
+/**
+ * 保存した場所をこの端末に書き込む。
+ * いつ直したかも一緒に残しておき、ほかの端末と並び順を突き合わせるときに使う。
+ * （opts.keepStamp = 同期で受け取った内容を書くとき。時刻は上書きしない）
+ */
+function persistSaved(opts = {}){
   try { localStorage.setItem('gsimap.saved', JSON.stringify(state.saved)); } catch {}
+  if (!opts.keepStamp && typeof stampPlaces === 'function') stampPlaces();
   if (typeof renderPlacePins === 'function') renderPlacePins();   // 地図上のピンも更新
 }
 
@@ -9271,6 +9426,10 @@ function showSaved(opts = {}){
 
   const login = $('#savedLogin');
   if (login) login.onclick = async () => { if (await driveSignIn()) showSaved(); };
+
+  // 開いたときに、ほかの端末で並べ替えた内容を取り込む（取り込めたら出し直す）
+  if (signed && !opts.nosync)
+    syncAll().then(ok => { if (ok) showSaved({ nosync:true }); }).catch(() => {});
 
   $$('.saved-list').forEach(list => list.addEventListener('click', e => {
     const ed = e.target.closest('[data-edit]');

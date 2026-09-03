@@ -1033,8 +1033,11 @@ border:1px solid var(--line);background:#fff;color:var(--text-sub);
 border-radius:10px;padding:1px 8px;font-size:11px;font-family:inherit;cursor:pointer;
 }
 .navmode:hover{background:#f1f3f4;color:var(--text);}
+.list-tools{display:flex;gap:6px;margin:2px 0 6px;}
+.list-tools .btn{display:inline-flex;align-items:center;gap:6px;padding:6px 10px;font-size:13px;}
+.list-tools .btn svg{width:16px;height:16px;fill:currentColor;}
 </style>
-<script>window.APP_BUILD='2d117d3b';</script>
+<script>window.APP_BUILD='484c49c9';</script>
 </head>
 <body>
 
@@ -4707,6 +4710,12 @@ async function showSavedRoutes(opts = {}){
         <div class="p-sub">${esc(note)}</div>
         ${signedIn ? '' : `
           <button class="btn primary" id="routeLoginBtn" style="margin:4px 0 14px">Google にログイン</button>`}
+        <div class="list-tools">
+          <button class="btn" data-newfolder>
+            <svg viewBox="0 0 24 24"><path d="M10 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-2zm3 10v3h-2v-3H8v-2h3V9h2v3h3v2z"/></svg>
+            新しいフォルダ
+          </button>
+        </div>
         ${list.length ? folderTreeHtml(groups, items => `
           <ul class="p-list route-list">
             ${items.map(r => `
@@ -6178,6 +6187,7 @@ function forgetFolder(path){
     localStorage.setItem(FOLDER_STORE, JSON.stringify(list));
   } catch {}
   putFolderOrder(folderOrder().filter(f => !gone(f)));
+  istate.routeFolders = (istate.routeFolders || []).filter(f => !gone(f));
 }
 
 /* ---------- 手で決めたフォルダの並び順 ----------
@@ -6451,8 +6461,15 @@ async function renameFolder(path, name){
  * 中に入っている地点・ルート、表示の設定、並び順もまとめて書き換える。
  */
 async function retargetFolder(from, dest){
-  const rename = f => (f === from || f.startsWith(from + FOLDER_SEP))
-    ? dest + f.slice(from.length) : f;
+  // dest が空（いちばん上）のときに「/北アルプス」のような
+  // 先頭の区切りが残らないよう、組み立て直す
+  const rename = f => {
+    f = f || '';
+    if (f !== from && !f.startsWith(from + FOLDER_SEP)) return f;
+    const rest = f.slice(from.length).replace(/^\//, '');     // 下の階層ぶん
+    if (!dest) return rest;
+    return rest ? dest + FOLDER_SEP + rest : dest;
+  };
 
   // 覚えているフォルダ名
   try {
@@ -6466,6 +6483,8 @@ async function retargetFolder(from, dest){
   } catch {}
   // 手で決めた並び順
   putFolderOrder([...new Set(folderOrder().map(rename))]);
+  // 一覧を作るときに使う控え（これを直さないと、消したはずの名前が残る）
+  istate.routeFolders = [...new Set((istate.routeFolders || []).map(rename).filter(Boolean))];
   // 地点
   state.saved.forEach(p => { p.folder = rename(p.folder || ''); });
   persistSaved();
@@ -6489,6 +6508,80 @@ async function retargetFolder(from, dest){
   }
   rememberFolder(dest);
   return true;
+}
+
+/** そのフォルダの中にある数を数える（下の階層もまとめて） */
+function folderContents(path){
+  const under = f => f === path || (f || '').startsWith(path + FOLDER_SEP);
+  let routes = 0;
+  try { routes = localRoutes().filter(r => under(r.folder)).length; } catch {}
+  return {
+    places: state.saved.filter(p => under(p.folder)).length,
+    routes,
+    folders: knownFolders().filter(f => f !== path && under(f)).length,
+  };
+}
+
+/**
+ * フォルダを消す。
+ * 中に入っているものは消さず、一つ上の階層へ出す
+ * （いちばん上のフォルダなら「未分類」へ）。
+ */
+async function deleteFolder(path){
+  if (!path) return false;
+  const parent = folderParts(path).slice(0, -1).join(FOLDER_SEP);
+  const c = folderContents(path);
+  const where = parent ? `「${folderName(parent)}」` : NO_FOLDER;
+
+  const inside = [
+    c.places  ? `地点 ${c.places} 件` : '',
+    c.routes  ? `ルート ${c.routes} 件` : '',
+    c.folders ? `フォルダ ${c.folders} 個` : '',
+  ].filter(Boolean).join('・');
+
+  const msg = inside
+    ? `フォルダ「${folderName(path)}」を消します。\n`
+      + `中の ${inside} は消さずに ${where} へ移ります。\n\nよろしいですか？`
+    : `フォルダ「${folderName(path)}」を消します。よろしいですか？`;
+  if (!confirm(msg)) return false;
+
+  if (inside) await retargetFolder(path, parent);   // 中身を一つ上へ引き上げる
+  forgetFolder(path);
+  toast(inside
+    ? `フォルダ「${folderName(path)}」を消しました（中身は ${where} へ）`
+    : `フォルダ「${folderName(path)}」を消しました`);
+  refreshItemList();
+  return true;
+}
+
+/** 新しいフォルダを作る */
+function newFolder(){
+  openItemEditor('folder', { title:'', folder:'' }, {
+    onSave: async patch => {
+      const name = (patch.name || '').trim().replace(/[/／]/g, '-');
+      if (!name){ toast('名前を入力してください'); return; }
+      const parent = patch.folder || '';
+      const path = parent ? parent + FOLDER_SEP + name : name;
+      if (folderDepth(path) > FOLDER_MAX_DEPTH){
+        toast(`フォルダは ${FOLDER_MAX_DEPTH} 階層までです`, 5000);
+        return;
+      }
+      if (knownFolders().includes(path)){
+        toast(`${parent ? `「${folderName(parent)}」の中に` : ''}同じ名前のフォルダがあります`, 5000);
+        return;
+      }
+      rememberFolder(path);
+      if (parent) istate.open.add(parent);      // 作った先が見えるように開いておく
+      toast(`フォルダ「${name}」を作りました`);
+      refreshItemList();
+    },
+  }, {
+    title: '新しいフォルダ',
+    save: '作成',
+    rootLabel: `${NO_FOLDER}（いちばん上）`,
+    // 3 階層までなので、入れ物にできるのは 2 階層目まで
+    folderFilter: f => folderDepth(f) < FOLDER_MAX_DEPTH,
+  });
 }
 
 /** そのフォルダの中に、地点・ルート・下位フォルダが 1 つも無いか */
@@ -6885,7 +6978,6 @@ function closeItemEditor(){
 function editFolder(path){
   if (!path) return;
   const parent = folderParts(path).slice(0, -1).join(FOLDER_SEP);
-  const empty = folderIsEmpty(path);
 
   openItemEditor('folder', { title:folderName(path), folder:parent }, {
     onSave: async patch => {
@@ -6898,11 +6990,7 @@ function editFolder(path){
       await renameFolder(cur, patch.name);
       refreshItemList();
     },
-    onDelete: empty ? async () => {
-      forgetFolder(path);
-      toast(`フォルダ「${folderName(path)}」を消しました`);
-      refreshItemList();
-    } : null,
+    onDelete: async () => { await deleteFolder(path); },
   }, {
     title: 'フォルダの設定',
     rootLabel: `${NO_FOLDER}（いちばん上）`,
@@ -6951,6 +7039,8 @@ function bindItemsUI(){
       refreshItemList();
       return;
     }
+    if (e.target.closest('[data-newfolder]')){ newFolder(); return; }
+
     const ed = e.target.closest('[data-editfolder]');
     if (ed){ editFolder(ed.dataset.editfolder); return; }
 
@@ -9407,6 +9497,12 @@ function showSaved(opts = {}){
         <button class="btn primary" id="savedLogin" style="margin:2px 0 12px">
           Google にログインして端末間で共有
         </button>`}
+      <div class="list-tools">
+        <button class="btn" data-newfolder>
+          <svg viewBox="0 0 24 24"><path d="M10 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-2zm3 10v3h-2v-3H8v-2h3V9h2v3h3v2z"/></svg>
+          新しいフォルダ
+        </button>
+      </div>
       ${state.saved.length ? folderTreeHtml(groups, items => `
         <ul class="p-list saved-list">
           ${items.map(p => `

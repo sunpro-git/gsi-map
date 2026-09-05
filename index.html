@@ -1037,7 +1037,7 @@ border-radius:10px;padding:1px 8px;font-size:11px;font-family:inherit;cursor:poi
 .list-tools .btn{display:inline-flex;align-items:center;gap:6px;padding:6px 10px;font-size:13px;}
 .list-tools .btn svg{width:16px;height:16px;fill:currentColor;}
 </style>
-<script>window.APP_BUILD='bdce9ca2';</script>
+<script>window.APP_BUILD='749e3d4b';</script>
 </head>
 <body>
 
@@ -1814,6 +1814,12 @@ function openExternal(url, opts = {}){
   // 戻ってきたときに「Google から帰ってきた」と分かるよう印を残す
   try { sessionStorage.setItem(AWAY_STORE, '1'); } catch {}
 
+  // どの入口（人型ボタン・右クリック・地点パネルのボタン／リンク）から出かけても
+  // 同じ扱いになるよう、ここでまとめて控えておく
+  gstate.awaitingPaste = true;
+  const from = parseGoogleLocation(url);
+  if (from) rememberSvFrom([from.lng, from.lat]);
+
   // スマホは別タブにすると戻れなくなるので、常に同じタブで開く
   const phone = window.innerWidth <= 640 || navigator.maxTouchPoints > 0;
   if (!phone && (opts.newTab || svNewTab())){
@@ -1828,8 +1834,6 @@ function gotoUrl(url){ location.href = url; }
 
 /** 指定地点にピンを立てた Google マップを開く */
 function openGoogleMaps(lngLat, opts){
-  gstate.awaitingPaste = true;      // 戻ってきたときの処理用
-  rememberSvFrom(lngLat);
   openExternal(googleMapsUrl(lngLat), opts);
   toast(autoPasteEnabled()
     ? 'Google マップを開きました。位置を決めたら右クリック →「座標をコピー」して戻ると、自動でピンが移動します'
@@ -1991,13 +1995,15 @@ async function autoSyncFromClipboard(){
   catch { return false; }                 // 許可されていない・iOS など
 
   if (!text || text === gstate.lastClip || text === seenClip()) return false;
-  rememberClip(text);
+  gstate.lastClip = text;              // この画面では読み直さない
 
   const v = parseGoogleLocation(text);
   if (!v) return false;
 
   const cur = state.place;
   if (cur && Math.abs(cur.lat - v.lat) < 1e-7 && Math.abs(cur.lng - v.lng) < 1e-7) return false;
+
+  rememberClip(text);                  // 実際に動かしたときだけ覚える
 
   const place = { lng:v.lng, lat:v.lat, title:'Google マップで指定した地点' };
   if (rstate.active){
@@ -2191,9 +2197,7 @@ function applyPastedLocation(){
  * その地点にピンを立てられる（URL の @緯度,経度 が視点の座標）。
  */
 function openStreetViewExternal(lngLat, opts){
-  gstate.awaitingPaste = true;      // 戻ってきたらクリップボードを見る
-  rememberSvFrom(lngLat);           // 同じ場所なら「動いていない」と分かる
-  openExternal(streetViewUrl(lngLat), opts);
+  openExternal(streetViewUrl(lngLat), opts);   // 控えは openExternal がまとめて行う
 }
 
 async function openStreetView(lngLat, opts){
@@ -2414,12 +2418,17 @@ function bindGoogleUI(){
 
   // タブに戻ってきたとき：自動取り込み、または貼り付けの案内
   const onReturn = async () => {
-    if (autoPasteEnabled()){
+    const away = gstate.awaitingPaste;        // Google から戻ってきたところか
+
+    // 自動取り込みは、戻ってきたときに限らず毎回試す
+    if (autoPasteEnabled() && await autoSyncFromClipboard()){
       gstate.awaitingPaste = false;
-      const done = await autoSyncFromClipboard();
-      if (done) return;                 // 自動で立てられたのでバーは要らない
+      return;                                 // 自動で立てられたのでバーは要らない
     }
-    if (!gstate.awaitingPaste) return;
+    // 自動取り込みが働かなかった場合（許可待ち・画面が前に出ていない・
+    // 中身が座標でない など）でも、ここで打ち切らずにボタンを出す。
+    // 以前はここで終わっていたため、コピーして戻っても何も出ないことがあった。
+    if (!away) return;
     gstate.awaitingPaste = false;
     // 何もコピーしていないのにボタンが出ると邪魔なので、
     // 中を見られるときは「新しくコピーしてきた座標」のときだけ出す。

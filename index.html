@@ -1037,7 +1037,7 @@ border-radius:10px;padding:1px 8px;font-size:11px;font-family:inherit;cursor:poi
 .list-tools .btn{display:inline-flex;align-items:center;gap:6px;padding:6px 10px;font-size:13px;}
 .list-tools .btn svg{width:16px;height:16px;fill:currentColor;}
 </style>
-<script>window.APP_BUILD='99f1ccf6';</script>
+<script>window.APP_BUILD='76879827';</script>
 </head>
 <body>
 
@@ -1424,8 +1424,10 @@ border-radius:10px;padding:1px 8px;font-size:11px;font-family:inherit;cursor:poi
   <div class="modal-card card">
     <h3>Google マップの座標を貼り付け</h3>
     <p>
-      Google マップで位置を決め直したら、<b>その地点を右クリック（スマホは長押し）→「座標をコピー」</b>し、
-      ここに貼り付けてください。この地点にピンを立て直します。
+      <b>ストリートビュー</b>で見たい視点にしたら、<b>アドレスバーの URL をコピー</b>
+      （Windows は <kbd>Ctrl</kbd>+<kbd>L</kbd> → <kbd>Ctrl</kbd>+<kbd>C</kbd>）。<br>
+      <b>Google マップ</b>なら、その地点を右クリック（スマホは長押し）→<b>「座標をコピー」</b>。<br>
+      どちらもここに貼り付ければ、その場所にピンを立て直します。
     </p>
     <div class="modal-field">
       <input id="pasteInput" type="text" autocomplete="off" spellcheck="false"
@@ -1435,8 +1437,8 @@ border-radius:10px;padding:1px 8px;font-size:11px;font-family:inherit;cursor:poi
         <input type="checkbox" id="pasteAuto">
         <span>
           <b>自動で取り込む</b>
-          — Google マップで右クリックし、一番上の座標をクリック（＝コピー）してこの画面に戻ると、
-          貼り付けなしでピンが移動します。
+          — コピーしてこの画面に戻るだけで、貼り付けなしでピンが移動します。
+          ストリートビューの視点も、アドレスバーをコピーして戻ればそのまま反映されます。
           有効にするとブラウザがクリップボードの読み取り許可を確認します（読み取った内容は
           座標として解釈するだけで、保存も送信もしません）。
           <span id="pasteAutoWarn" class="warn"></span>
@@ -1941,7 +1943,7 @@ async function enableAutoPaste(){
   }
 
   toast(perm === 'granted'
-    ? 'Google マップで右クリック → 一番上の座標をクリックして戻ると、自動でピンが移動します'
+    ? 'コピーして戻るだけでピンが移動します（ストリートビューはアドレスバーをコピー）'
     : 'この端末では自動取り込みが働かない場合があります。'
       + 'そのときは「クリップボードから読み取る」を押してください', 7000);
   return true;

@@ -1037,7 +1037,7 @@ border-radius:10px;padding:1px 8px;font-size:11px;font-family:inherit;cursor:poi
 .list-tools .btn{display:inline-flex;align-items:center;gap:6px;padding:6px 10px;font-size:13px;}
 .list-tools .btn svg{width:16px;height:16px;fill:currentColor;}
 </style>
-<script>window.APP_BUILD='f916b1cc';</script>
+<script>window.APP_BUILD='bdce9ca2';</script>
 </head>
 <body>
 
@@ -2054,17 +2054,18 @@ function svFrom(){
  * iPhone のように読めない場合は null を返す（勝手に許可を求めない）。
  */
 async function peekClipboardLocation(){
-  if (!navigator.clipboard || !navigator.clipboard.readText) return null;
+  const no = extra => ({ readable:false, ...extra });
+  if (!window.isSecureContext) return no();
+  if (!navigator.clipboard || !navigator.clipboard.readText) return no();
   try {
     const st = await navigator.permissions.query({ name:'clipboard-read' });
-    if (st.state !== 'granted') return null;      // 許可されていなければ触らない
-  } catch { return null; }                        // この判定ができない環境も触らない
+    if (st.state === 'denied') return no({ denied:true });   // 断られている
+    if (st.state !== 'granted') return no();                 // まだ許可されていない
+  } catch { return no(); }                                   // この判定ができない環境
   try {
     const text = await navigator.clipboard.readText();
-    if (!text) return null;
-    const v = parseGoogleLocation(text);
-    return v ? { v, text } : null;
-  } catch { return null; }
+    return { readable:true, text, v: text ? parseGoogleLocation(text) : null };
+  } catch { return no(); }
 }
 
 /**
@@ -2092,6 +2093,10 @@ function showClipBar(text){
   const bar = $('#clipBar');
   if (!bar) return;
   gstate.clipShown = text || '';
+  const label = bar.querySelector('.cb-text');
+  if (label) label.textContent = text
+    ? 'コピーした座標にピンを立てますか？'
+    : 'コピーした URL・座標からピンを立てますか？';
   bar.classList.remove('hidden');
   clearTimeout(gstate.clipTimer);
   gstate.clipTimer = setTimeout(() => hideClipBar(), 30000);
@@ -2417,9 +2422,17 @@ function bindGoogleUI(){
     if (!gstate.awaitingPaste) return;
     gstate.awaitingPaste = false;
     // 何もコピーしていないのにボタンが出ると邪魔なので、
-    // 「新しくコピーしてきた座標」のときだけ出す
-    const hit = await peekClipboardLocation();
-    if (clipIsNews(hit)) showClipBar(hit.text);
+    // 中を見られるときは「新しくコピーしてきた座標」のときだけ出す。
+    //
+    // クリップボードを黙って読むにはブラウザの許可が要る。
+    // まだ許可されていないと中を見られないので、そのときはボタンだけ出しておき、
+    // 押してもらった流れの中で読む（押した操作の中でなら読める）。
+    const peek = await peekClipboardLocation();
+    if (peek.readable){
+      if (peek.v && clipIsNews({ v:peek.v, text:peek.text })) showClipBar(peek.text);
+      return;
+    }
+    if (!peek.denied) showClipBar('');
   };
   window.addEventListener('focus', onReturn);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) onReturn(); });

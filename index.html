@@ -1037,7 +1037,7 @@ border-radius:10px;padding:1px 8px;font-size:11px;font-family:inherit;cursor:poi
 .list-tools .btn{display:inline-flex;align-items:center;gap:6px;padding:6px 10px;font-size:13px;}
 .list-tools .btn svg{width:16px;height:16px;fill:currentColor;}
 </style>
-<script>window.APP_BUILD='04d4e63d';</script>
+<script>window.APP_BUILD='99f1ccf6';</script>
 </head>
 <body>
 
@@ -1839,6 +1839,14 @@ function parseGoogleLocation(text){
   const ok = (lat, lng) =>
     (isFinite(lat) && isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180)
       ? { lat, lng } : null;
+
+  // 0) ストリートビューの URL は @ に「立っている場所」が入る。
+  //    data= の中の座標は見ている対象を指すことがあるので、こちらを先に見る。
+  //      https://www.google.com/maps/@35.6813893,139.7861021,21a,90y,90t/data=!3m7!1e1!...
+  if (/!1e1|[\d.]+y,[\d.]+t/.test(s)){
+    const sv = s.match(/@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/);
+    if (sv) return ok(+sv[1], +sv[2]);
+  }
 
   // 1) URL の data= に入る実際の地点座標（表示中心の @ より正確）
   let m = s.match(/!3d(-?\d+(?:\.\d+)?)!4d(-?\d+(?:\.\d+)?)/);

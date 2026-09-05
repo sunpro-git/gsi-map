@@ -1037,7 +1037,7 @@ border-radius:10px;padding:1px 8px;font-size:11px;font-family:inherit;cursor:poi
 .list-tools .btn{display:inline-flex;align-items:center;gap:6px;padding:6px 10px;font-size:13px;}
 .list-tools .btn svg{width:16px;height:16px;fill:currentColor;}
 </style>
-<script>window.APP_BUILD='9e7845ca';</script>
+<script>window.APP_BUILD='46536565';</script>
 </head>
 <body>
 
@@ -1727,7 +1727,7 @@ function toggleStreetViewPick(on){
   if (gstate.pickMode)
     toast(hasApiKey()
       ? 'ストリートビューを見たい場所を地図上でクリックしてください'
-      : 'ストリートビューを見たい場所を地図上でクリックしてください（Google マップが別タブで開きます）');
+      : 'ストリートビューを見たい場所を地図上でクリックしてください（Google マップに移り、戻るボタンでここへ戻れます）');
 }
 
 /**
@@ -1771,57 +1771,43 @@ function googleNavUrl(lngLat, mode = 'driving'){
  * 移動前に作成中のルートを控えておき、戻ってきたときに復元する。
  */
 const AWAY_STORE = 'gsimap.away';
-const EXT_WINDOW = 'gsimap-external';   // 外部サイト用のタブにつける名前
-
-// パソコンで開いた 1 枚のタブを覚えておき、次からはそこを書き換えて使い回す。
-// 名前だけに頼ると、相手のサイトの中で移動したあとに別のタブが増えることがある。
-let extWin = null;
-
-function openExternal(url){
+/**
+ * 外部サイト（Google マップ・ストリートビュー）を開く。
+ *
+ * 【なぜ同じタブで開くのか】
+ * Google のページは Cross-Origin-Opener-Policy: same-origin-allow-popups を
+ * 返す。これは「開いてくれた相手との縁を切る」という指定で、読み込まれた瞬間に
+ *   - こちらが持っているタブの参照が使えなくなる（閉じたものとして扱われる）
+ *   - そのタブに付けた名前も消える
+ * ため、いちど Google を表示したタブは、こちらから二度と呼び出せない。
+ * 名前を付けて開き直しても、必ず新しいタブができてしまう
+ * （ブラウザの仕様なので、こちらの書き方では避けられない）。
+ *
+ * そこで、別のタブは作らず「いまのタブで開いて、戻るボタンで帰ってくる」形にする。
+ * 出かける前に作りかけのルートなどを控えてあるので、戻れば元の状態に復元される。
+ *
+ * 別のタブで開きたいときは、Ctrl（⌘）を押しながら押せばこれまでどおり。
+ */
+function openExternal(url, opts = {}){
   saveSession();
-  // スマホでは同じタブで開くのでこのページは一度終了する。
+  // 同じタブで開くのでこのページは一度終了する。
   // 戻ってきたときに「Google から帰ってきた」と分かるよう印を残す
   try { sessionStorage.setItem(AWAY_STORE, '1'); } catch {}
 
-  const isMobile = window.innerWidth <= 640 || navigator.maxTouchPoints > 0;
-  if (isMobile){
-    location.href = url;            // 戻るボタンでこの画面に帰ってこられる
+  if (opts.newTab){
+    window.open(url, '_blank', 'noopener');   // 指示があったときだけ別のタブ
     return;
   }
-
-  const w = externalWindow();
-  if (w){
-    try {
-      w.location.href = url;      // 中身を入れ替えるだけ。タブは増えない
-      w.focus();
-      return;
-    } catch { /* 使えなくなっていたら開き直す */ }
-    try { w.close(); } catch {}   // 使い回せない残骸は閉じておく
-  }
-  extWin = window.open(url, EXT_WINDOW);
-  if (extWin) { try { extWin.focus(); } catch {} }
+  gotoUrl(url);                     // 戻るボタンでこの画面に帰ってこられる
 }
 
-/**
- * 外部サイト用のタブを 1 枚だけ用意する。
- *
- * アプリを開き直すと extWin は消えてしまうので、そのときは名前で探し直す。
- * window.open に URL を渡さないと、既にあるタブを「動かさずに」受け取れる。
- * 無ければ空のタブが 1 枚できるだけで、増え続けることはない。
- */
-function externalWindow(){
-  if (extWin && !extWin.closed) return extWin;
-  try {
-    const w = window.open('', EXT_WINDOW);
-    if (w) extWin = w;
-  } catch { /* ポップアップが止められている場合 */ }
-  return (extWin && !extWin.closed) ? extWin : null;
-}
+/** このタブで移動する（動作確認のときに差し替えられるよう、1 か所にまとめてある） */
+function gotoUrl(url){ location.href = url; }
 
 /** 指定地点にピンを立てた Google マップを開く */
-function openGoogleMaps(lngLat){
+function openGoogleMaps(lngLat, opts){
   gstate.awaitingPaste = true;      // 戻ってきたときの処理用
-  openExternal(googleMapsUrl(lngLat));
+  openExternal(googleMapsUrl(lngLat), opts);
   toast(autoPasteEnabled()
     ? 'Google マップを開きました。位置を決めたら右クリック →「座標をコピー」して戻ると、自動でピンが移動します'
     : 'Google マップを開きました。位置を決め直した場合は、その地点を右クリック →「座標をコピー」してから戻ってきてください',
@@ -1829,8 +1815,8 @@ function openGoogleMaps(lngLat){
 }
 
 /** 現在地から指定地点まで、Google マップでナビを始める */
-function openGoogleNav(lngLat, mode = 'driving'){
-  openExternal(googleNavUrl(lngLat, mode));
+function openGoogleNav(lngLat, mode = 'driving', opts){
+  openExternal(googleNavUrl(lngLat, mode), opts);
   toast('Google マップでナビを開きます');
 }
 
@@ -2113,16 +2099,14 @@ function applyPastedLocation(){
  * 道なりに進んで目的の場所が見つかったら、アドレスバーの URL をコピーして戻ると
  * その地点にピンを立てられる（URL の @緯度,経度 が視点の座標）。
  */
-function openStreetViewExternal(lngLat){
+function openStreetViewExternal(lngLat, opts){
   gstate.awaitingPaste = true;      // 戻ってきたらクリップボードを見る
-  toast('見つけた場所でアドレスバーの URL をコピーし、'
-      + 'このアプリに戻って検索欄に貼り付けると、その地点にピンが立ちます', 9000);
-  openExternal(streetViewUrl(lngLat));
+  openExternal(streetViewUrl(lngLat), opts);
 }
 
-async function openStreetView(lngLat){
+async function openStreetView(lngLat, opts){
   // キーが無いときはアプリ内表示のかわりに Google マップへ（キー不要・費用なし）
-  if (!hasApiKey()){ openStreetViewExternal(lngLat); return; }
+  if (!hasApiKey()){ openStreetViewExternal(lngLat, opts); return; }
 
   try { await loadGoogle(); }
   catch (e){ guardKey(e, 'ストリートビューには Google Maps API キーが必要です。'); return; }
@@ -9253,7 +9237,7 @@ function showPlace(place){
         <svg viewBox="0 0 24 24"><circle cx="12" cy="4" r="2.4"/><path d="M15.5 8h-7A1.5 1.5 0 0 0 7 9.5V14h2v8h6v-8h2V9.5A1.5 1.5 0 0 0 15.5 8z"/></svg>
         <div>
           <div class="v">Google マップでストリートビューを開く</div>
-          <div class="k">別タブで開きます（API キー不要・無料）</div>
+          <div class="k">戻るボタンでここへ戻れます（API キー不要・無料）</div>
         </div>
         <svg class="ext" viewBox="0 0 24 24"><path d="M19 19H5V5h7V3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg>
       </a>
@@ -9263,7 +9247,7 @@ function showPlace(place){
         <svg viewBox="0 0 24 24"><path d="M20.5 3l-.16.03L15 5.1 9 3 3.36 4.9c-.21.07-.36.25-.36.48V20.5c0 .28.22.5.5.5l.16-.03L9 18.9l6 2.1 5.64-1.9c.21-.07.36-.25.36-.48V3.5c0-.28-.22-.5-.5-.5zM15 19l-6-2.11V5l6 2.11V19z"/></svg>
         <div>
           <div class="v">Google マップを開く</div>
-          <div class="k">別タブで開き、この地点にピンが立ちます</div>
+          <div class="k">この地点にピンが立ちます。戻るボタンでここへ戻れます</div>
         </div>
         <svg class="ext" viewBox="0 0 24 24"><path d="M19 19H5V5h7V3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg>
       </a>
@@ -9308,10 +9292,8 @@ function showPlace(place){
     openGoogleNav([place.lng, place.lat], b.dataset.mode);
   }));
 
-  // 外部サイトへのリンクは、必ず openExternal を通す。
-  //   スマホ … 同じタブで開く（新しいタブだと戻れなくなるため）
-  //   パソコン… 同じ 1 枚のタブを使い回す（開くたびタブが増えないように）
-  // Ctrl / ⌘ / 中クリックのときは、いつもどおり新しいタブで開かせる
+  // 外部サイトへのリンクは、必ず openExternal を通す（同じタブで開き、戻るボタンで帰る）。
+  // Ctrl / ⌘ / Shift / 中クリックのときは、いつもどおり新しいタブで開かせる
   $$('#panelBody a[data-ext]').forEach(a => {
     a.addEventListener('click', e => {
       if (e.ctrlKey || e.metaKey || e.shiftKey || e.button === 1) return;
@@ -10461,7 +10443,7 @@ function showHelp(){
       <div class="p-row"><svg viewBox="0 0 24 24"><circle cx="12" cy="4" r="2.4"/><path d="M15.5 8h-7A1.5 1.5 0 0 0 7 9.5V14h2v8h6v-8h2V9.5A1.5 1.5 0 0 0 15.5 8z"/></svg>
         <div><div class="k">Google マップ・ストリートビュー</div><div class="v">
           ストリートビューは <b>API キー無しでも利用できます</b>。<kbd>S</kbd> または右クリックメニューから地点を選ぶと、
-          Google マップのストリートビューが別タブで開きます（Maps URLs、キー不要・費用なし）。<br>
+          Google マップのストリートビューが開きます（Maps URLs、キー不要・費用なし）。ブラウザの戻るボタンでこの画面に帰ってこられます。Ctrl（⌘）を押しながら選ぶと別のタブで開きます。<br>
           API キーを設定すると、アプリ内のパネルに表示され、地図上に現在位置と視野方向が連動して出ます。
           また左下「レイヤ」から Google の道路地図・航空写真・地形を下絵に切り替えられます
           （地理院タイルの陰影起伏図などは Google の下絵の上にも重ねられます）。
@@ -10484,7 +10466,9 @@ function bindMapEvents(){
     hideCtxMenu();
     if (gstate.pickMode){                       // ストリートビューの地点選択中
       toggleStreetViewPick(false);
-      openStreetView([e.lngLat.lng, e.lngLat.lat]);
+      const o = e.originalEvent || {};
+      // Ctrl（⌘）を押しながらなら、別のタブで開く
+      openStreetView([e.lngLat.lng, e.lngLat.lat], { newTab: !!(o.ctrlKey || o.metaKey) });
       return;
     }
     if (pickEndFromMap(e.lngLat)) return;              // 出発地を地図から選ぶ

@@ -1037,7 +1037,7 @@ border-radius:10px;padding:1px 8px;font-size:11px;font-family:inherit;cursor:poi
 .list-tools .btn{display:inline-flex;align-items:center;gap:6px;padding:6px 10px;font-size:13px;}
 .list-tools .btn svg{width:16px;height:16px;fill:currentColor;}
 </style>
-<script>window.APP_BUILD='46536565';</script>
+<script>window.APP_BUILD='04d4e63d';</script>
 </head>
 <body>
 
@@ -1807,6 +1807,7 @@ function gotoUrl(url){ location.href = url; }
 /** 指定地点にピンを立てた Google マップを開く */
 function openGoogleMaps(lngLat, opts){
   gstate.awaitingPaste = true;      // 戻ってきたときの処理用
+  rememberSvFrom(lngLat);
   openExternal(googleMapsUrl(lngLat), opts);
   toast(autoPasteEnabled()
     ? 'Google マップを開きました。位置を決めたら右クリック →「座標をコピー」して戻ると、自動でピンが移動します'
@@ -1924,7 +1925,7 @@ async function enableAutoPaste(){
   // すでに座標をコピー済みなら、その場で反映する
   const v = parseGoogleLocation(text);
   if (v){
-    gstate.lastClip = text;
+    rememberClip(text);
     goToPlace({ lng:v.lng, lat:v.lat, title:'Google マップで指定した地点' });
     toast('コピー済みの座標にピンを移動しました。'
         + '以降は Google マップで座標をクリックして戻るだけで反映されます', 7000);
@@ -1959,8 +1960,8 @@ async function autoSyncFromClipboard(){
   try { text = await navigator.clipboard.readText(); }
   catch { return false; }                 // 許可されていない・iOS など
 
-  if (!text || text === gstate.lastClip) return false;
-  gstate.lastClip = text;
+  if (!text || text === gstate.lastClip || text === seenClip()) return false;
+  rememberClip(text);
 
   const v = parseGoogleLocation(text);
   if (!v) return false;
@@ -1988,6 +1989,35 @@ async function autoSyncFromClipboard(){
  * 利用者がボタンを押した流れの中でなら読み取れる。
  * そのため、戻る → ボタンを 1 回押す、だけで済むようにしている。
  */
+/* ---------- 「もう聞かなくていい」内容を覚えておく ----------
+ *
+ *  ストリートビューは同じタブで開くので、戻ってくるとページが読み込み直される。
+ *  そのため覚えを画面の中だけに置くと消えてしまい、前に断った内容でも
+ *  毎回たずねてしまう。端末に残しておく。
+ */
+
+const CLIP_STORE = 'gsimap.lastClip';      // 取り込み済み・断った内容
+const SV_FROM_STORE = 'gsimap.svFrom';     // ストリートビューを開いた地点
+
+function seenClip(){
+  try { return localStorage.getItem(CLIP_STORE) || ''; } catch { return ''; }
+}
+function rememberClip(text){
+  gstate.lastClip = text;
+  try { localStorage.setItem(CLIP_STORE, text || ''); } catch {}
+}
+
+/** ストリートビューを開いた地点を控える（戻ってきたときの比較用） */
+function rememberSvFrom(lngLat){
+  try { sessionStorage.setItem(SV_FROM_STORE, lngLat.join(',')); } catch {}
+}
+function svFrom(){
+  try {
+    const v = (sessionStorage.getItem(SV_FROM_STORE) || '').split(',').map(Number);
+    return v.length === 2 && v.every(isFinite) ? v : null;
+  } catch { return null; }
+}
+
 /**
  * クリップボードの中身を、確認画面を出さずにのぞく。
  * 読み取りが許可されている環境でだけ中を見る。
@@ -2001,21 +2031,47 @@ async function peekClipboardLocation(){
   } catch { return null; }                        // この判定ができない環境も触らない
   try {
     const text = await navigator.clipboard.readText();
-    return text ? parseGoogleLocation(text) : null;
+    if (!text) return null;
+    const v = parseGoogleLocation(text);
+    return v ? { v, text } : null;
   } catch { return null; }
 }
 
-function showClipBar(){
+/**
+ * 戻ってきたときに「ピンを立てますか？」と聞くべきか。
+ *
+ * 聞くのは「新しく座標をコピーしてきたとき」だけにする。
+ *   - 前に取り込んだ／断ったのと同じ内容なら聞かない
+ *   - 出かけた地点と同じ場所なら（＝視点を動かしていない）聞かない
+ *   - いまピンが立っている場所と同じでも聞かない
+ */
+function clipIsNews(hit){
+  if (!hit) return false;
+  if (hit.text === seenClip()) return false;
+
+  const same = (a, b) => a && b
+    && Math.abs(a[0] - b[0]) < 1e-5 && Math.abs(a[1] - b[1]) < 1e-5;
+  const here = [hit.v.lng, hit.v.lat];
+  if (same(here, svFrom())) return false;
+  const cur = state.place;
+  if (cur && same(here, [cur.lng, cur.lat])) return false;
+  return true;
+}
+
+function showClipBar(text){
   const bar = $('#clipBar');
   if (!bar) return;
+  gstate.clipShown = text || '';
   bar.classList.remove('hidden');
   clearTimeout(gstate.clipTimer);
-  gstate.clipTimer = setTimeout(hideClipBar, 30000);
+  gstate.clipTimer = setTimeout(() => hideClipBar(), 30000);
 }
-function hideClipBar(){
+/** 閉じたときは、その内容ではもう聞かないようにする */
+function hideClipBar(opts = {}){
   const bar = $('#clipBar');
   if (bar) bar.classList.add('hidden');
   clearTimeout(gstate.clipTimer);
+  if (opts.dismissed && gstate.clipShown) rememberClip(gstate.clipShown);
 }
 
 /** バーのボタンから呼ぶ。押した勢いでクリップボードを読む */
@@ -2033,7 +2089,7 @@ async function useClipboardPin(){
     toast('クリップボードから座標を読み取れませんでした。貼り付けてください', 6000);
     return;
   }
-  gstate.lastClip = text;
+  rememberClip(text);
   hideClipBar();
   const place = { lng:v.lng, lat:v.lat, title:'Google マップで指定した地点' };
   if (rstate.active) setPin([place.lng, place.lat]);
@@ -2101,6 +2157,7 @@ function applyPastedLocation(){
  */
 function openStreetViewExternal(lngLat, opts){
   gstate.awaitingPaste = true;      // 戻ってきたらクリップボードを見る
+  rememberSvFrom(lngLat);           // 同じ場所なら「動いていない」と分かる
   openExternal(streetViewUrl(lngLat), opts);
 }
 
@@ -2258,7 +2315,7 @@ function bindGoogleUI(){
   $('#pegmanBtn').onclick = () => toggleStreetViewPick();
   $('#svClose').onclick = closeStreetView;
   $('#clipUse').onclick = useClipboardPin;
-  $('#clipClose').onclick = hideClipBar;
+  $('#clipClose').onclick = () => hideClipBar({ dismissed:true });
   $('#svPin').onclick = () => svDropPin(false);
   $('#svPinAhead').onclick = () => svDropPin(true);
   $('#keyBtn').onclick = () => openKeyDialog();
@@ -2329,9 +2386,10 @@ function bindGoogleUI(){
     }
     if (!gstate.awaitingPaste) return;
     gstate.awaitingPaste = false;
-    // 座標をコピーしていないのにボタンが出ると邪魔なので、
-    // 中身を確かめられて、それが座標のときだけ出す
-    if (await peekClipboardLocation()) showClipBar();
+    // 何もコピーしていないのにボタンが出ると邪魔なので、
+    // 「新しくコピーしてきた座標」のときだけ出す
+    const hit = await peekClipboardLocation();
+    if (clipIsNews(hit)) showClipBar(hit.text);
   };
   window.addEventListener('focus', onReturn);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) onReturn(); });

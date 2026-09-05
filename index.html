@@ -1037,7 +1037,7 @@ border-radius:10px;padding:1px 8px;font-size:11px;font-family:inherit;cursor:poi
 .list-tools .btn{display:inline-flex;align-items:center;gap:6px;padding:6px 10px;font-size:13px;}
 .list-tools .btn svg{width:16px;height:16px;fill:currentColor;}
 </style>
-<script>window.APP_BUILD='19797a06';</script>
+<script>window.APP_BUILD='9e7845ca';</script>
 </head>
 <body>
 
@@ -1789,16 +1789,33 @@ function openExternal(url){
     return;
   }
 
-  // 前に開いたタブが残っていれば、そこを新しい場所へ動かす
-  if (extWin && !extWin.closed){
+  const w = externalWindow();
+  if (w){
     try {
-      extWin.location.href = url;
-      extWin.focus();
+      w.location.href = url;      // 中身を入れ替えるだけ。タブは増えない
+      w.focus();
       return;
     } catch { /* 使えなくなっていたら開き直す */ }
+    try { w.close(); } catch {}   // 使い回せない残骸は閉じておく
   }
   extWin = window.open(url, EXT_WINDOW);
   if (extWin) { try { extWin.focus(); } catch {} }
+}
+
+/**
+ * 外部サイト用のタブを 1 枚だけ用意する。
+ *
+ * アプリを開き直すと extWin は消えてしまうので、そのときは名前で探し直す。
+ * window.open に URL を渡さないと、既にあるタブを「動かさずに」受け取れる。
+ * 無ければ空のタブが 1 枚できるだけで、増え続けることはない。
+ */
+function externalWindow(){
+  if (extWin && !extWin.closed) return extWin;
+  try {
+    const w = window.open('', EXT_WINDOW);
+    if (w) extWin = w;
+  } catch { /* ポップアップが止められている場合 */ }
+  return (extWin && !extWin.closed) ? extWin : null;
 }
 
 /** 指定地点にピンを立てた Google マップを開く */

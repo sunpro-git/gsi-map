@@ -1037,7 +1037,7 @@ border-radius:10px;padding:1px 8px;font-size:11px;font-family:inherit;cursor:poi
 .list-tools .btn{display:inline-flex;align-items:center;gap:6px;padding:6px 10px;font-size:13px;}
 .list-tools .btn svg{width:16px;height:16px;fill:currentColor;}
 </style>
-<script>window.APP_BUILD='749e3d4b';</script>
+<script>window.APP_BUILD='294733f1';</script>
 </head>
 <body>
 
@@ -1729,7 +1729,7 @@ function toggleStreetViewPick(on){
   if (gstate.pickMode)
     toast(hasApiKey()
       ? 'ストリートビューを見たい場所を地図上でクリックしてください'
-      : 'ストリートビューを見たい場所を地図上でクリックしてください（Google マップに移り、戻るボタンでここへ戻れます）');
+      : 'ストリートビューを見たい場所を地図上でクリックしてください（Google マップが別タブで開きます）');
 }
 
 /**
@@ -1792,20 +1792,39 @@ const AWAY_STORE = 'gsimap.away';
  */
 /* ---------- 開き方の設定 ----------
  *
- *  同じタブ … タブは増えないが、ストリートビューで動き回ると
- *             Google が履歴を積むので、戻るボタンを何度も押すことになる
- *  別のタブ … 見終わってタブを閉じれば一度でアプリに戻れる。
- *             閉じないままだとタブが残る
- *  どちらが良いかは使い方によるので、選べるようにしてある。
+ *  既定は「Google 用のタブを 1 枚だけ持ち、二度目からはその中身を入れ替える」。
+ *  アプリのタブはそのまま残り、タブも増えない。
+ *  戻るのもタブを切り替えるだけなので、戻るボタンを何度も押さずに済む。
+ *
+ *  「同じタブで開く」に変えると、アプリのタブ自体が Google に移り、
+ *  戻るボタンで帰ってくる形になる（タブを増やしたくない場合用）。
  */
 
 const SV_TAB_STORE = 'gsimap.svNewTab';
+const EXT_WINDOW = 'gsimap-external';   // Google 用のタブに付ける名前
+
+// 開いたタブを覚えておく。アプリを読み込み直すと消えるので、そのときは名前で探し直す
+let extWin = null;
 
 function svNewTab(){
-  try { return localStorage.getItem(SV_TAB_STORE) === '1'; } catch { return false; }
+  try { return localStorage.getItem(SV_TAB_STORE) !== '0'; } catch { return true; }
 }
 function setSvNewTab(on){
   try { localStorage.setItem(SV_TAB_STORE, on ? '1' : '0'); } catch {}
+}
+
+/**
+ * Google 用のタブを 1 枚だけ用意する。
+ * window.open に行き先を渡さずに呼ぶと、既にあるタブを「動かさずに」受け取れる。
+ * 無ければ空のタブが 1 枚できるだけで、増え続けることはない。
+ */
+function externalWindow(){
+  if (extWin && !extWin.closed) return extWin;
+  try {
+    const w = window.open('', EXT_WINDOW);
+    if (w) extWin = w;
+  } catch { /* ポップアップが止められている場合 */ }
+  return (extWin && !extWin.closed) ? extWin : null;
 }
 
 function openExternal(url, opts = {}){
@@ -1822,11 +1841,28 @@ function openExternal(url, opts = {}){
 
   // スマホは別タブにすると戻れなくなるので、常に同じタブで開く
   const phone = window.innerWidth <= 640 || navigator.maxTouchPoints > 0;
-  if (!phone && (opts.newTab || svNewTab())){
+  if (phone || (!opts.newTab && !svNewTab())){
+    gotoUrl(url);                   // 戻るボタンでこの画面に帰ってこられる
+    return;
+  }
+
+  // Ctrl（⌘）を押しながらのときだけ、その場かぎりで独立したタブを開く
+  if (opts.newTab){
     window.open(url, '_blank', 'noopener');
     return;
   }
-  gotoUrl(url);                     // 戻るボタンでこの画面に帰ってこられる
+
+  // ふだんは Google 用の 1 枚を使い回す（中身を入れ替えて前に出す）
+  const w = externalWindow();
+  if (w){
+    try {
+      w.location.href = url;
+      w.focus();
+      return;
+    } catch { /* 使えなくなっていたら開き直す */ }
+  }
+  extWin = window.open(url, EXT_WINDOW);
+  if (extWin){ try { extWin.focus(); } catch {} }
 }
 
 /** このタブで移動する（動作確認のときに差し替えられるよう、1 か所にまとめてある） */
@@ -9347,7 +9383,7 @@ function showPlace(place){
         <svg viewBox="0 0 24 24"><circle cx="12" cy="4" r="2.4"/><path d="M15.5 8h-7A1.5 1.5 0 0 0 7 9.5V14h2v8h6v-8h2V9.5A1.5 1.5 0 0 0 15.5 8z"/></svg>
         <div>
           <div class="v">Google マップでストリートビューを開く</div>
-          <div class="k">戻るボタンでここへ戻れます（API キー不要・無料）</div>
+          <div class="k">別タブで開きます（API キー不要・無料）</div>
         </div>
         <svg class="ext" viewBox="0 0 24 24"><path d="M19 19H5V5h7V3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg>
       </a>
@@ -9357,7 +9393,7 @@ function showPlace(place){
         <svg viewBox="0 0 24 24"><path d="M20.5 3l-.16.03L15 5.1 9 3 3.36 4.9c-.21.07-.36.25-.36.48V20.5c0 .28.22.5.5.5l.16-.03L9 18.9l6 2.1 5.64-1.9c.21-.07.36-.25.36-.48V3.5c0-.28-.22-.5-.5-.5zM15 19l-6-2.11V5l6 2.11V19z"/></svg>
         <div>
           <div class="v">Google マップを開く</div>
-          <div class="k">この地点にピンが立ちます。戻るボタンでここへ戻れます</div>
+          <div class="k">別タブで開き、この地点にピンが立ちます</div>
         </div>
         <svg class="ext" viewBox="0 0 24 24"><path d="M19 19H5V5h7V3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg>
       </a>
@@ -10412,7 +10448,7 @@ function showMenu(){
         </li>
         <li data-act="svtab">
           <svg viewBox="0 0 24 24"><path d="M19 4H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2zm0 14H5V8h14v10z"/></svg>
-          ストリートビューを別タブで開く
+          Google を別タブで開く
           <span class="menu-state ${svNewTab() ? 'on' : ''}">${svNewTab() ? 'オン' : 'オフ'}</span>
         </li>
         <li data-act="key"><svg viewBox="0 0 24 24"><path d="M12.65 10A6 6 0 1 0 7 14a5.9 5.9 0 0 0 5.65-4H17v4h4v-4h2v-4H12.65zM7 14a2 2 0 1 1 2-2 2 2 0 0 1-2 2z"/></svg>Google API キーを設定</li>
@@ -10446,8 +10482,8 @@ function showMenu(){
         const on = !svNewTab();
         setSvNewTab(on);
         toast(on
-          ? 'ストリートビューを別タブで開きます。見終わったらそのタブを閉じてください'
-          : 'ストリートビューを同じタブで開きます。戻るボタンでアプリに帰ってきます');
+          ? 'Google は別タブ 1 枚で開きます。二度目からはそのタブが切り替わります'
+          : 'Google は同じタブで開きます。戻るボタンでアプリに帰ってきます');
         showMenu();
         break;
       }
@@ -10567,7 +10603,7 @@ function showHelp(){
       <div class="p-row"><svg viewBox="0 0 24 24"><circle cx="12" cy="4" r="2.4"/><path d="M15.5 8h-7A1.5 1.5 0 0 0 7 9.5V14h2v8h6v-8h2V9.5A1.5 1.5 0 0 0 15.5 8z"/></svg>
         <div><div class="k">Google マップ・ストリートビュー</div><div class="v">
           ストリートビューは <b>API キー無しでも利用できます</b>。<kbd>S</kbd> または右クリックメニューから地点を選ぶと、
-          Google マップのストリートビューが開きます（Maps URLs、キー不要・費用なし）。ブラウザの戻るボタンでこの画面に帰ってこられます。Ctrl（⌘）を押しながら選ぶと別のタブで開きます。<br>
+          Google マップのストリートビューが別タブで開きます（Maps URLs、キー不要・費用なし）。タブは 1 枚だけ使い回すので増えません。アプリに戻るときは、アプリのタブに切り替えるだけです。<br>
           API キーを設定すると、アプリ内のパネルに表示され、地図上に現在位置と視野方向が連動して出ます。
           また左下「レイヤ」から Google の道路地図・航空写真・地形を下絵に切り替えられます
           （地理院タイルの陰影起伏図などは Google の下絵の上にも重ねられます）。

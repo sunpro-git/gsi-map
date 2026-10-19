@@ -1037,7 +1037,7 @@ border-radius:10px;padding:1px 8px;font-size:11px;font-family:inherit;cursor:poi
 .list-tools .btn{display:inline-flex;align-items:center;gap:6px;padding:6px 10px;font-size:13px;}
 .list-tools .btn svg{width:16px;height:16px;fill:currentColor;}
 </style>
-<script>window.APP_BUILD='294733f1';</script>
+<script>window.APP_BUILD='732c7f08';</script>
 </head>
 <body>
 
@@ -1910,6 +1910,23 @@ function parseGoogleLocation(text){
     if (sv) return ok(+sv[1], +sv[2]);
   }
 
+  // 0.5) /maps/place/<座標>/ … Google でピンが立っている場所そのもの。
+  //      10 進でも度分秒でも入る。表示中心（@）より確実なのでここで拾う。
+  //        /maps/place/35.695424,+139.751432/@...
+  //        /maps/place/35°41'43.5"N+139°45'05.2"E/@...
+  const place = s.match(/\/maps\/place\/([^/@?]+)/);
+  if (place){
+    const seg = place[1].replace(/\+/g, ' ');
+    const dec = seg.match(/^(-?\d{1,2}(?:\.\d+)?)\s*,\s*(-?\d{1,3}(?:\.\d+)?)$/);
+    if (dec) return ok(+dec[1], +dec[2]);
+    // 度分秒は 0.1 秒（約 3m）までしか無いので、URL の中に
+    // より正確な !3d!4d があればそちらを優先する
+    if (/[°º]/.test(seg) && !/!3d-?\d/.test(s)){
+      const v = parseGoogleLocation(seg);     // 度分秒はこの関数の 4) で読む
+      if (v) return v;
+    }
+  }
+
   // 1) URL の data= に入る実際の地点座標（表示中心の @ より正確）
   let m = s.match(/!3d(-?\d+(?:\.\d+)?)!4d(-?\d+(?:\.\d+)?)/);
   if (m) return ok(+m[1], +m[2]);
@@ -2185,6 +2202,8 @@ function openPasteDialog(){
   $('#pasteResult').textContent = '';
   const auto = $('#pasteAuto');
   auto.checked = autoPasteEnabled();
+  // 開いた時点で中身を入れておく（読めないときは黙って何もしない）
+  pasteFromClipboard({ quiet:true });
   const usable = window.isSecureContext && navigator.clipboard && navigator.clipboard.readText;
   auto.disabled = !usable;
   const note = auto.closest('.modal-check');
@@ -2207,21 +2226,52 @@ function previewPaste(){
   return v;
 }
 
-async function pasteFromClipboard(){
-  try {
-    if (!navigator.clipboard || !navigator.clipboard.readText)
-      throw new Error('この環境ではクリップボードを読み取れません');
-    const text = await navigator.clipboard.readText();
-    $('#pasteInput').value = text;
-    previewPaste();
-  } catch (e){
-    toast('クリップボードを読み取れませんでした。入力欄に長押しで貼り付けてください', 5000);
+/**
+ * クリップボードを読んで入力欄に入れる。
+ * 何も起きないと原因が分からないので、結果は必ず画面に出す。
+ */
+async function pasteFromClipboard(opts = {}){
+  const el = $('#pasteResult');
+  const fail = msg => {
+    if (opts.quiet) return false;             // 画面を開いたときの自動読み取り
+    el.textContent = msg;
+    el.classList.add('ng');
+    return false;
+  };
+
+  if (!navigator.clipboard || !navigator.clipboard.readText)
+    return fail('この端末ではクリップボードを読み取れません。入力欄に貼り付けてください');
+
+  let text = '';
+  try { text = await navigator.clipboard.readText(); }
+  catch {
+    return fail('クリップボードの読み取りが許可されていません。'
+              + '入力欄をタップして貼り付け（Ctrl+V）してください');
   }
+
+  if (!text.trim())
+    return fail('クリップボードが空です。Google マップで座標か URL をコピーしてください');
+
+  $('#pasteInput').value = text;
+  const v = previewPaste();
+  if (!v && !opts.quiet){
+    el.textContent = '座標として読み取れませんでした：'
+      + (text.length > 40 ? text.slice(0, 40) + '…' : text);
+    el.classList.add('ng');
+  }
+  return !!v;
 }
 
 function applyPastedLocation(){
   const v = previewPaste();
-  if (!v){ toast('座標を読み取れませんでした'); return; }
+  if (!v){
+    const el = $('#pasteResult');
+    el.classList.add('ng');
+    el.textContent = $('#pasteInput').value.trim()
+      ? '座標として読み取れません。Google マップの URL か「緯度, 経度」を入れてください'
+      : '何も入っていません。「クリップボードから読み取る」を押すか、ここに貼り付けてください';
+    return;
+  }
   closePasteDialog();
   goToPlace({ lng:v.lng, lat:v.lat, title:'Google マップで指定した地点' });
 }
